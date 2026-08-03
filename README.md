@@ -4,16 +4,16 @@ A small collection of scripts that updates the operating system and supported pa
 
 The project is intended for people who want a straightforward way to install all available software updates without remembering a different set of commands for every platform or Linux distribution.
 
-> [!IMPORTANT]
-> The Linux and Windows scripts are available now. The macOS script will be added in a later release.
-
 ## Current status
 
 | Platform | Script | Status |
 |---|---|---|
 | Linux | `linux/update-everything.sh` | Available |
 | Windows | `windows/update-everything.ps1` | Available |
-| macOS | `macos/update-everything.sh` | Planned |
+| macOS | `macos/update-everything.sh` | Available |
+
+> [!IMPORTANT]
+> The macOS script does not install macOS 26 or later, and never performs a major macOS upgrade unless asked. See [Protection against unsupported macOS releases](#protection-against-unsupported-macos-releases).
 
 ## Linux support
 
@@ -218,11 +218,130 @@ Examples:
 
 The Patch My PC Home Updater is often kept as a portable executable in a downloads folder. The script does not run executables from download folders on its own; pass `-PatchMyPCPath` to use a copy kept there.
 
+## macOS support
+
+The macOS script installs available macOS updates, then updates every supported application manager installed on the Mac. It is written for the GNU bash 3.2 that ships with macOS, so it needs no newer bash to run.
+
+### System updater
+
+- `softwareupdate`, which covers macOS updates, Safari, and the Xcode Command Line Tools
+
+### Additional managers
+
+When installed, the script also updates:
+
+- Mac App Store applications, through [`mas`](https://github.com/mas-cli/mas)
+- Homebrew formulae and casks
+- MacPorts ports
+- Nix packages installed in a user profile
+
+Homebrew is the macOS counterpart of Chocolatey and Scoop, and MacPorts is the other established equivalent. `--greedy-casks` adds `brew upgrade --cask --greedy`, which also refreshes casks that carry their own updater; that is the closest macOS equivalent of the Patch My PC Home Updater. It is not the default, because it re-downloads applications that would have updated themselves.
+
+## Protection against unsupported macOS releases
+
+macOS 26 and later are not installed. The script reads every update that `softwareupdate` offers, works out the macOS release each one leads to, and then installs the approved ones by label. It never runs `softwareupdate --install --all`, so a held-back release cannot be installed as a side effect of installing something else.
+
+Three rules decide what is held back:
+
+1. Any macOS release newer than the maximum, which is macOS 25 by default, is always held back. Raise it with `--max-macos-major` once a newer release has been verified on the machines it will run on.
+2. A major upgrade, meaning any release newer than the one currently installed, is held back unless `--allow-major-upgrade` is given.
+3. On a Mac running OpenCore Legacy Patcher, a major upgrade is always held back, even with `--allow-major-upgrade`.
+
+Updates within the installed release, such as 15.6 to 15.6.1, and non-macOS updates such as Safari and the Command Line Tools, are installed normally. Every held-back update is named in the summary along with the reason it was held back.
+
+## OpenCore Legacy Patcher
+
+Macs running an otherwise unsupported release of macOS through [OpenCore Legacy Patcher](https://dortania.github.io/OpenCore-Legacy-Patcher/) need care, because a macOS update removes the root patches that make their hardware work.
+
+The script looks for OCLP in several independent places, since any one of them can be absent depending on how the Mac was set up:
+
+- `/System/Library/CoreServices/OpenCore-Legacy-Patcher.plist`
+- `/System/Library/CoreServices/OpenCore-Patcher.app`
+- `/Library/Application Support/Dortania`
+- `/Applications/OpenCore-Patcher.app`
+- The `OCLP-Version` NVRAM variable
+- An `opencore-version` entry in the booted device tree
+
+When OCLP is detected, the script:
+
+- Refuses every major macOS upgrade, so that upgrades stay a deliberate decision made through OCLP.
+- Warns that OCLP itself should be updated first, so that the installed version supports the release being applied.
+- Prints a reminder after installing a macOS update that root patches must be re-applied in OpenCore Legacy Patcher after the restart.
+
+Minor macOS updates are still installed on an OCLP Mac, because they are the security updates for the release already running. They do remove root patches until OCLP re-applies them, so use `--skip-system-update` to update applications now and leave macOS for a time when you can re-patch and restart.
+
+## macOS installation
+
+Clone the repository and make the script executable:
+
+```bash
+git clone https://github.com/blueangelcpt/update-everything.git
+cd update-everything
+chmod +x macos/update-everything.sh
+```
+
+Run the script as your normal user:
+
+```bash
+./macos/update-everything.sh
+```
+
+Do not run the whole script with `sudo`. It requests `sudo` only for operations that need administrator privileges, and Homebrew refuses to run as root.
+
+## macOS command-line options
+
+```text
+Usage: update-everything.sh [options]
+
+Options:
+  --system-only            Update only macOS itself.
+  --skip-system-update     Update only the additional managers.
+  --no-cleanup             Do not remove cached downloads or unused packages.
+  --greedy-casks           Also upgrade Homebrew casks that update themselves.
+  --allow-major-upgrade    Permit an upgrade to a newer major macOS release,
+                           up to the supported maximum. Refused on a Mac
+                           running OpenCore Legacy Patcher.
+  --max-macos-major N      Highest major macOS release this script may
+                           install (default: 25).
+  -h, --help               Show the help text.
+  -v, --version            Show the script version.
+```
+
+Examples:
+
+```bash
+# Install macOS updates and update every detected manager
+./macos/update-everything.sh
+
+# Update applications now, and leave macOS for a time when you can restart
+./macos/update-everything.sh --skip-system-update
+
+# Also refresh casks that normally update themselves
+./macos/update-everything.sh --greedy-casks
+
+# Allow macOS 26 once it has been verified on this Mac
+./macos/update-everything.sh --allow-major-upgrade --max-macos-major 26
+```
+
+## What the macOS script does
+
+1. Confirms that it is running on macOS, and reports the release, hardware model, and architecture.
+2. Looks for OpenCore Legacy Patcher, and reports the evidence it found.
+3. Lists everything `softwareupdate` offers, and decides for each item whether it may be installed.
+4. Installs the approved updates one label at a time, so a held-back release can never be installed by accident.
+5. Upgrades Mac App Store applications with `mas`.
+6. Updates Homebrew, upgrades formulae and casks, and cleans up unless `--no-cleanup` is given.
+7. Runs `port selfupdate` and upgrades outdated MacPorts ports, then removes inactive ports.
+8. Updates Nix channels and packages in a user profile.
+9. Continues with the remaining managers if one of them fails.
+10. Prints a summary, any restart notice, and the OCLP root-patch reminder where it applies.
+
 ## Scope and safety
 
 This project installs updates that are already available through configured repositories, package managers, and update services. It does **not**:
 
-- Perform major operating-system release upgrades, such as moving from one Ubuntu or Fedora release to the next, or installing a Windows feature update that Windows Update does not already offer.
+- Perform major operating-system release upgrades, such as moving from one Ubuntu or Fedora release to the next, installing a Windows feature update that Windows Update does not already offer, or upgrading macOS to a newer major release unless `--allow-major-upgrade` is given.
+- Install macOS 26 or later, unless the maximum is deliberately raised with `--max-macos-major`.
 - Add, remove, or modify software repositories, package sources, or Windows Update settings.
 - Install package managers or updaters that are not already present.
 - Update project-level dependencies such as Composer packages, npm dependencies, Python virtual environments, Cargo projects, NuGet packages, or application-specific dependency locks.
@@ -233,7 +352,9 @@ APT phased updates are deliberately included. Phasing normally delays selected n
 
 On Windows, every updater runs unattended, which means each one accepts its own licence and package agreements on your behalf. Windows updates that would prompt for input are skipped and named in the output rather than answered automatically.
 
-Automatic cleanup is enabled by default where the package manager offers an appropriate and reasonably safe command. Use `--no-cleanup` on Linux or `-NoCleanup` on Windows to disable it.
+On macOS, a macOS update removes the root patches on a Mac running OpenCore Legacy Patcher, and the hardware they support stops working until the patches are re-applied. Read [OpenCore Legacy Patcher](#opencore-legacy-patcher) before running the script on such a Mac.
+
+Automatic cleanup is enabled by default where the package manager offers an appropriate and reasonably safe command. Use `--no-cleanup` on Linux and macOS, or `-NoCleanup` on Windows, to disable it.
 
 Always keep current backups of important data before applying system-wide updates.
 
@@ -262,7 +383,9 @@ On Windows, it reports a reboot requirement when:
 - Chocolatey returns exit code `1641` or `3010`; or
 - a pending servicing operation or a queued file rename is recorded in the registry.
 
-Neither script reboots the computer automatically.
+On macOS, it reports a restart requirement when an installed update was listed with `Action: restart`. On a Mac running OpenCore Legacy Patcher, it also prints a reminder to re-apply root patches after that restart.
+
+None of the scripts reboots the computer automatically.
 
 ## Development
 
@@ -278,6 +401,14 @@ When ShellCheck is installed:
 shellcheck linux/update-everything.sh
 ```
 
+The same two checks apply to the macOS script:
+
+```bash
+bash -n macos/update-everything.sh
+```
+
+The macOS script is written for the GNU bash 3.2 that ships with macOS. Avoid associative arrays, `mapfile`, `readarray`, and case-conversion expansions such as `${variable,,}`, none of which exist in that version.
+
 Validate the PowerShell script syntax without running it:
 
 ```powershell
@@ -292,7 +423,7 @@ When PSScriptAnalyzer is installed:
 Invoke-ScriptAnalyzer -Path .\windows\update-everything.ps1
 ```
 
-Both scripts are organised the same way: detection is separate from execution, every updater has its own function, and each one is run through a wrapper that records success or failure and lets the remaining updaters continue.
+All three scripts are organised the same way: detection is separate from execution, every updater has its own function, and each one is run through a wrapper that records success or failure and lets the remaining updaters continue.
 
 Support for another Linux distribution should normally be added by:
 
@@ -310,6 +441,15 @@ Support for another Windows updater should normally be added by:
 4. Updating this README.
 5. Testing on a Windows installation or in a suitable disposable virtual machine.
 
+Support for another macOS manager should normally be added by:
+
+1. Adding a dedicated update function that runs the manager without prompting.
+2. Adding the detection and the `run_task` call to `main`, including the skip reason used when the manager is not installed.
+3. Updating this README.
+4. Testing on a Mac, and on a Mac running OpenCore Legacy Patcher where the change affects macOS updates.
+
+Changes to the macOS version guard should be covered by exercising `should_install_update` directly, with the current release, the maximum, the OCLP flag, and the major-upgrade flag set to each combination that matters.
+
 ## Repository layout
 
 ```text
@@ -317,15 +457,14 @@ update-everything/
 ├── linux/
 │   └── update-everything.sh
 ├── macos/
-│   └── README.md
+│   ├── README.md
+│   └── update-everything.sh
 ├── windows/
 │   ├── README.md
 │   └── update-everything.ps1
 ├── LICENSE
 └── README.md
 ```
-
-The `macos` directory holds a placeholder until that script is added.
 
 ## Contributing
 
@@ -345,6 +484,14 @@ When reporting a Windows problem, include:
 - The output of `$PSVersionTable.PSVersion`
 - The relevant command output, including the script's summary
 - Whether the session was elevated
+
+When reporting a macOS problem, include:
+
+- macOS version from `sw_vers`, and the model from `sysctl -n hw.model`
+- Whether the Mac runs OpenCore Legacy Patcher, and which version
+- Script version from `--version`
+- The manager involved, and its version
+- The relevant command output, including the script's summary and the `softwareupdate --list` output where macOS updates are involved
 
 Do not include credentials, repository secrets, access tokens, or other sensitive information in an issue.
 
