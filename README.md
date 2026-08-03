@@ -49,8 +49,7 @@ When installed, the script also updates:
 Clone the repository and make the script executable:
 
 ```bash
-# Replace the URL with this repository's GitHub URL after publishing it.
-git clone <repository-url>
+git clone https://github.com/blueangelcpt/update-everything.git
 cd update-everything
 chmod +x linux/update-everything.sh
 ```
