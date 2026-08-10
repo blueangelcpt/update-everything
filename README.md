@@ -1,5 +1,9 @@
 # Update Everything
 
+[![CI](https://github.com/blueangelcpt/update-everything/actions/workflows/ci.yml/badge.svg)](https://github.com/blueangelcpt/update-everything/actions/workflows/ci.yml)
+[![GitHub release](https://img.shields.io/github/v/release/blueangelcpt/update-everything)](https://github.com/blueangelcpt/update-everything/releases)
+[![License: GPL-3.0-or-later](https://img.shields.io/badge/license-GPL--3.0--or--later-blue.svg)](LICENSE)
+
 A small collection of scripts that updates the operating system and supported package managers in one command.
 
 The project is intended for people who want a straightforward way to install all available software updates without remembering a different set of commands for every platform or Linux distribution.
@@ -12,8 +16,13 @@ The project is intended for people who want a straightforward way to install all
 | Windows | `windows/update-everything.ps1` | Available |
 | macOS | `macos/update-everything.sh` | Available |
 
+All three scripts use the repository-wide version `2.0.0`.
+
 > [!IMPORTANT]
-> The macOS script does not install macOS 26 or later, and never performs a major macOS upgrade unless asked. See [Protection against unsupported macOS releases](#protection-against-unsupported-macos-releases).
+> The macOS script does not upgrade a Mac to macOS 26 or later by default, and
+> never performs any major macOS upgrade unless asked. Maintenance updates for
+> the release already installed remain eligible. See
+> [Protection against unsupported macOS releases](#protection-against-unsupported-macos-releases).
 
 ## Linux support
 
@@ -70,6 +79,7 @@ Usage: update-everything.sh [options]
 Options:
   --system-only   Update only the native system package manager.
   --no-cleanup    Do not remove unused dependencies or cached packages.
+  --dry-run       Detect managers and print mutating commands without running them.
   -h, --help      Show the help text.
   -v, --version   Show the script version.
 ```
@@ -85,6 +95,9 @@ Examples:
 
 # Install updates without automatic cache or unused-package cleanup
 ./linux/update-everything.sh --no-cleanup
+
+# Safely preview the managers and commands without changing the machine
+./linux/update-everything.sh --dry-run
 ```
 
 ## What the Linux script does
@@ -93,7 +106,9 @@ Examples:
 2. Reads `/etc/os-release` where available.
 3. Detects the native system package manager associated with the distribution.
 4. Requests administrator privileges using `sudo` or `doas` when required.
-5. Refreshes package metadata and installs all available updates.
+5. Refreshes package metadata and installs available updates. APT uses
+   `upgrade --with-new-pkgs`, which may add required dependencies but does not
+   remove installed packages.
 6. Includes APT packages held back only because of phased rollout.
 7. Optionally removes unused dependencies and package caches.
 8. Updates Snap, Flatpak, and Linux Homebrew installations when present.
@@ -170,8 +185,9 @@ Scoop refuses to run elevated, because it installs into the profile of the user 
 | `-SystemOnly` | Install Windows updates only, and run no application updater. |
 | `-SkipWindowsUpdate` | Run the application updaters only. |
 | `-IncludeDrivers` | Also install driver updates offered by Windows Update. |
-| `-NoCleanup` | Do not remove superseded package versions or cached installers. |
+| `-NoCleanup` | Skip Scoop's old-version and download-cache cleanup commands. Other managers retain their own built-in behavior. |
 | `-PatchMyPCPath <path>` | Full path to `PatchMyPC.exe`, for a portable copy the script does not find on its own. |
+| `-DryRun` | Detect updaters and show mutating work without executing it. |
 | `-Version` | Print the script version and exit. |
 
 The script uses standard PowerShell help. Read the full description with:
@@ -191,6 +207,9 @@ Examples:
 
 # Run the application updaters only, including a portable Patch My PC copy
 .\windows\update-everything.ps1 -SkipWindowsUpdate -PatchMyPCPath "$env:USERPROFILE\Downloads\PatchMyPC.exe"
+
+# Preview without installing updates, accepting EULAs, or cleaning up packages
+.\windows\update-everything.ps1 -DryRun
 ```
 
 ## What the Windows script does
@@ -201,7 +220,8 @@ Examples:
 4. Runs `winget upgrade --all` in silent mode, accepting package and source agreements.
 5. Runs `choco upgrade all --yes` without progress output.
 6. Runs `scoop update` and `scoop update *`, and cleans up old versions and the download cache unless `-NoCleanup` is given.
-7. Runs the Patch My PC Home Updater with `/auto`, which updates every out-of-date application without showing its selection interface.
+7. Verifies Patch My PC's Authenticode publisher, then runs the Home Updater
+   with `/s`, its fully silent automatic mode.
 8. Triggers a Microsoft Store update scan, which installs what it finds in the background.
 9. Continues with the remaining updaters if one of them fails.
 10. Prints a summary and exits with a non-zero status if any operation failed.
@@ -210,13 +230,16 @@ Examples:
 
 | Updater | How it is located |
 |---|---|
-| WinGet | `PATH`, then the App Execution Alias in `%LOCALAPPDATA%`, then the App Installer package folder |
-| Chocolatey | `PATH`, then `%ChocolateyInstall%\bin\choco.exe` |
+| WinGet | In a normal session, `PATH` and the per-user App Execution Alias; otherwise the newest App Installer package in a 64-bit or 32-bit Program Files root. Elevated runs never trust per-user candidates. |
+| Chocolatey | `%ChocolateyInstall%\bin\choco.exe`, then `%ProgramData%\chocolatey\bin\choco.exe` |
 | Scoop | `PATH` (`scoop.cmd` or `scoop.exe`) |
-| Patch My PC | `PATH`, common installation folders, the registry `App Paths` entry, or `-PatchMyPCPath` |
+| Patch My PC | Signed machine-wide Program Files or HKLM `App Paths` candidates, or an explicitly supplied `-PatchMyPCPath` |
 | Microsoft Store | The `MDM_EnterpriseModernAppManagement_AppManagement01` management class |
 
-The Patch My PC Home Updater is often kept as a portable executable in a downloads folder. The script does not run executables from download folders on its own; pass `-PatchMyPCPath` to use a copy kept there.
+The Patch My PC Home Updater is often kept as a portable executable in a
+downloads folder. The script never auto-discovers executables in user-writable
+directories. Pass `-PatchMyPCPath` for a portable copy; the file is still
+refused unless Windows reports a valid Patch My PC Authenticode signature.
 
 ## macOS support
 
@@ -239,11 +262,19 @@ Homebrew is the macOS counterpart of Chocolatey and Scoop, and MacPorts is the o
 
 ## Protection against unsupported macOS releases
 
-macOS 26 and later are not installed. The script reads every update that `softwareupdate` offers, works out the macOS release each one leads to, and then installs the approved ones by label. It never runs `softwareupdate --install --all`, so a held-back release cannot be installed as a side effect of installing something else.
+Major upgrades to macOS 26 and later are held back by default. The script reads
+every update that `softwareupdate` offers, works out the macOS release each one
+leads to, and then installs the approved ones by label. It never runs
+`softwareupdate --install --all`, so a held-back release cannot be installed as
+a side effect of installing something else.
 
 Three rules decide what is held back:
 
-1. Any macOS release newer than the maximum, which is macOS 25 by default, is always held back. Raise it with `--max-macos-major` once a newer release has been verified on the machines it will run on.
+1. Any major-upgrade target newer than the maximum, which is macOS 25 by
+   default, is held back. Raise it with `--max-macos-major` only after a newer
+   release has been verified on the machines it will run on. Maintenance
+   updates for the release already installed remain eligible even if that Mac
+   is already above the ceiling.
 2. A major upgrade, meaning any release newer than the one currently installed, is held back unless `--allow-major-upgrade` is given.
 3. On a Mac running OpenCore Legacy Patcher, a major upgrade is always held back, even with `--allow-major-upgrade`.
 
@@ -301,8 +332,10 @@ Options:
   --allow-major-upgrade    Permit an upgrade to a newer major macOS release,
                            up to the supported maximum. Refused on a Mac
                            running OpenCore Legacy Patcher.
-  --max-macos-major N      Highest major macOS release this script may
-                           install (default: 25).
+  --max-macos-major N      Highest target for a major macOS upgrade
+                           (default: 25).
+  --dry-run                List and evaluate updates, but do not install or
+                           clean up anything.
   -h, --help               Show the help text.
   -v, --version            Show the script version.
 ```
@@ -321,6 +354,9 @@ Examples:
 
 # Allow macOS 26 once it has been verified on this Mac
 ./macos/update-everything.sh --allow-major-upgrade --max-macos-major 26
+
+# Evaluate every offered label without installing or cleaning up anything
+./macos/update-everything.sh --dry-run
 ```
 
 ## What the macOS script does
@@ -341,7 +377,9 @@ Examples:
 This project installs updates that are already available through configured repositories, package managers, and update services. It does **not**:
 
 - Perform major operating-system release upgrades, such as moving from one Ubuntu or Fedora release to the next, installing a Windows feature update that Windows Update does not already offer, or upgrading macOS to a newer major release unless `--allow-major-upgrade` is given.
-- Install macOS 26 or later, unless the maximum is deliberately raised with `--max-macos-major`.
+- Upgrade a Mac to macOS 26 or later unless the maximum is deliberately raised
+  with `--max-macos-major`. Maintenance updates for an already-installed
+  release remain eligible.
 - Add, remove, or modify software repositories, package sources, or Windows Update settings.
 - Install package managers or updaters that are not already present.
 - Update project-level dependencies such as Composer packages, npm dependencies, Python virtual environments, Cargo projects, NuGet packages, or application-specific dependency locks.
@@ -354,7 +392,18 @@ On Windows, every updater runs unattended, which means each one accepts its own 
 
 On macOS, a macOS update removes the root patches on a Mac running OpenCore Legacy Patcher, and the hardware they support stops working until the patches are re-applied. Read [OpenCore Legacy Patcher](#opencore-legacy-patcher) before running the script on such a Mac.
 
-Automatic cleanup is enabled by default where the package manager offers an appropriate and reasonably safe command. Use `--no-cleanup` on Linux and macOS, or `-NoCleanup` on Windows, to disable it.
+Automatic cleanup is enabled by default where the package manager offers an
+appropriate and reasonably safe command. Use `--no-cleanup` on Linux and macOS,
+or `-NoCleanup` on Windows, to disable the script's explicit cleanup commands.
+A manager may still apply its own inseparable installation behavior.
+
+All platforms provide a dry-run mode. Linux prints the trusted commands it
+would run. macOS performs the read-only `softwareupdate --list` and manager
+inventory queries needed to evaluate labels. Windows performs a read-only
+Windows Update search and updater discovery. Dry runs do not elevate, accept
+EULAs, download or install updates, refresh package metadata, trigger Store
+updates, or clean up packages. A dry run is a preview of orchestration, not a
+guarantee that a later live update will succeed.
 
 Always keep current backups of important data before applying system-wide updates.
 
@@ -364,11 +413,13 @@ Always keep current backups of important data before applying system-wide update
 |---:|---|
 | `0` | Every detected update operation completed successfully |
 | `1` | At least one detected update operation failed |
-| `2` | Invalid usage or unsupported operating system |
+| `2` | Invalid or conflicting script options, or unsupported operating system |
 
 Individual package-manager commands may return other statuses internally. The script records those failures, continues where possible, and returns `1` after printing its summary.
 
-The exit codes are the same on both platforms. On Windows, code `2` is returned when the script is started on a platform other than Windows.
+PowerShell itself handles unknown parameter names before the script begins and
+may use its own non-zero host exit code. Conflicting Windows modes and an
+unsupported operating system return `2` from the script.
 
 ## Reboot notices
 
@@ -420,8 +471,27 @@ $errors
 When PSScriptAnalyzer is installed:
 
 ```powershell
-Invoke-ScriptAnalyzer -Path .\windows\update-everything.ps1
+Invoke-ScriptAnalyzer -Path .\windows\update-everything.ps1 -Settings .\PSScriptAnalyzerSettings.psd1
 ```
+
+Run all safe shell tests with:
+
+```bash
+tests/run-shell-tests.sh
+```
+
+Run the Windows tests with Pester 5.7.1 or later in Windows PowerShell 5.1:
+
+```powershell
+Invoke-Pester -Path .\tests\windows -CI
+```
+
+CI runs syntax checks, pinned ShellCheck 0.10.0, the shell tests under Linux
+and Apple's Bash 3.2, the Windows PowerShell 5.1 parser, pinned
+PSScriptAnalyzer 1.25.0, and Pester. It never runs a live updater. The automated
+tests use functions, mocked commands, fixtures, and dry-run paths; they do not
+replace manual testing on each supported distribution, Windows release, Intel
+and Apple silicon Macs, or OCLP-patched hardware.
 
 All three scripts are organised the same way: detection is separate from execution, every updater has its own function, and each one is run through a wrapper that records success or failure and lets the remaining updaters continue.
 
@@ -454,6 +524,7 @@ Changes to the macOS version guard should be covered by exercising `should_insta
 
 ```text
 update-everything/
+├── .github/workflows/ci.yml
 ├── linux/
 │   └── update-everything.sh
 ├── macos/
@@ -462,13 +533,18 @@ update-everything/
 ├── windows/
 │   ├── README.md
 │   └── update-everything.ps1
+├── tests/
+├── CHANGELOG.md
+├── CONTRIBUTING.md
+├── SECURITY.md
 ├── LICENSE
 └── README.md
 ```
 
 ## Contributing
 
-Bug reports and pull requests are welcome. When reporting a Linux problem, include:
+Bug reports and pull requests are welcome. See [`CONTRIBUTING.md`](CONTRIBUTING.md)
+for validation and safety requirements. When reporting a Linux problem, include:
 
 - Distribution and version
 - Package manager and version
@@ -494,6 +570,16 @@ When reporting a macOS problem, include:
 - The relevant command output, including the script's summary and the `softwareupdate --list` output where macOS updates are involved
 
 Do not include credentials, repository secrets, access tokens, or other sensitive information in an issue.
+
+## Versioning and releases
+
+The repository uses one [Semantic Version](https://semver.org/) for all three
+scripts. A release updates each embedded version together, adds a changelog
+entry, and publishes an annotated `vMAJOR.MINOR.PATCH` tag from a tested commit
+on `main`. Security and bug fixes use patch releases, backward-compatible
+functionality uses minor releases, and intentional breaking changes use major
+releases. See [`CHANGELOG.md`](CHANGELOG.md) for release history and
+[`SECURITY.md`](SECURITY.md) for private vulnerability reporting.
 
 ## License
 

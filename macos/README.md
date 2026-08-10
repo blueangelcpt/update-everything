@@ -1,6 +1,9 @@
 # macOS updater
 
-`update-everything.sh` installs available macOS updates, then updates every supported application manager installed on the Mac. It will not install macOS 26 or later, and it will not perform a major macOS upgrade unless you ask for one.
+`update-everything.sh` version 2.0.0 installs available macOS updates, then
+updates every supported application manager installed on the Mac. It will not
+upgrade a Mac to macOS 26 or later by default, and it will not perform any major
+macOS upgrade unless you ask for one.
 
 ## What it updates
 
@@ -16,15 +19,27 @@ A manager that is not installed is reported as skipped, not as a failure. One ma
 
 ## Version guard
 
-macOS 26 and later are not installed. The script reads every update that `softwareupdate` offers, works out the macOS release each one leads to, and installs the approved ones by label. It never runs `softwareupdate --install --all`, so a held-back release cannot be installed by accident.
+Major upgrades to macOS 26 and later are held back by default. The script reads
+every update that `softwareupdate` offers, works out the macOS release each one
+leads to, and installs the approved ones by label. It never runs
+`softwareupdate --install --all`, so a held-back release cannot be installed by
+accident.
 
 Three rules decide what is held back:
 
-1. Any macOS release newer than the maximum, which is macOS 25 by default, is always held back. Raise it with `--max-macos-major` once a newer release has been verified on the machines it will run on.
+1. Any major-upgrade target newer than the maximum, which is macOS 25 by
+   default, is held back. Raise it with `--max-macos-major` only after a newer
+   release has been verified. Maintenance updates for the installed release
+   remain eligible even when that Mac is already above the ceiling.
 2. A major upgrade, meaning any release newer than the one currently installed, is held back unless `--allow-major-upgrade` is given.
 3. On a Mac running OpenCore Legacy Patcher, a major upgrade is always held back, even with `--allow-major-upgrade`.
 
 Updates within the installed release, such as 15.6 to 15.6.1, and non-macOS updates such as Safari and the Command Line Tools, are installed normally. Everything held back is named in the summary along with the reason.
+
+The maximum applies to upgrades, not maintenance of the release already
+installed. If a Mac already runs a release above the configured maximum,
+updates within that same release remain eligible while any further upgrade is
+held back.
 
 ## OpenCore Legacy Patcher
 
@@ -62,7 +77,8 @@ Run the script as your normal user. It requests `sudo` only for the commands tha
 | `--no-cleanup` | Do not remove cached downloads or unused packages. |
 | `--greedy-casks` | Also upgrade Homebrew casks that carry their own updater. |
 | `--allow-major-upgrade` | Permit a major macOS upgrade, up to the supported maximum. Refused on an OCLP Mac. |
-| `--max-macos-major N` | Highest major macOS release the script may install (default `25`). |
+| `--max-macos-major N` | Highest target for a major macOS upgrade (default `25`). |
+| `--dry-run` | List and evaluate updates without installing or cleaning up anything. |
 | `-h`, `--help` | Show the help text. |
 | `-v`, `--version` | Show the script version. |
 
@@ -80,6 +96,9 @@ Examples:
 
 # Allow macOS 26 once it has been verified on this Mac
 ./update-everything.sh --allow-major-upgrade --max-macos-major 26
+
+# Evaluate offered labels without making changes or prompting for sudo
+./update-everything.sh --dry-run
 ```
 
 ## Exit codes
@@ -96,5 +115,12 @@ Examples:
 - On Apple silicon, an update that restarts the Mac can require authentication that `softwareupdate` cannot supply from a script. If one fails for that reason, install it from System Settings.
 - A Mac managed by nix-darwin is reported as skipped, because its configuration must be rebuilt from its own flake or configuration file rather than upgraded in place.
 - The script is written for the GNU bash 3.2 that ships with macOS, so it runs without installing a newer bash.
+- `--system-only` and `--skip-system-update` are mutually exclusive.
+- Dry-run mode executes read-only inventory commands, including
+  `softwareupdate --list`, but never elevates or invokes an install, upgrade,
+  cleanup, channel update, or EULA acceptance operation.
+- Automated tests exercise parsing, punctuation in labels, failure isolation,
+  restart state, and the OCLP/major-upgrade matrix. No claim is made that every
+  path has been live-tested on Intel, Apple silicon, or OCLP-patched hardware.
 
 See the [repository README](../README.md) for the full description, including what the script deliberately does not do.

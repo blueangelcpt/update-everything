@@ -21,9 +21,11 @@ IFS=$'\n\t'
 
 readonly SCRIPT_NAME="${0##*/}"
 readonly SCRIPT_VERSION="2.0.0"
+readonly SYSTEM_COMMAND_PATH="/run/current-system/sw/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 
 DO_CLEANUP=1
 DO_ADDITIONAL_MANAGERS=1
+DRY_RUN=0
 
 SYSTEM_MANAGER=""
 DISTRO_NAME="Linux"
@@ -35,6 +37,7 @@ PRIVILEGE_TOOL=""
 SUCCEEDED=()
 FAILED=()
 SKIPPED=()
+PLANNED=()
 
 usage() {
     cat <<USAGE
@@ -46,6 +49,7 @@ package manager, followed by supported cross-distribution managers.
 Options:
   --system-only   Update only the native system package manager.
   --no-cleanup    Do not remove unused dependencies or cached packages.
+  --dry-run       Detect managers and print mutating commands without running them.
   -h, --help      Show this help text.
   -v, --version   Show the script version.
 
@@ -74,11 +78,52 @@ have_command() {
     command -v "$1" >/dev/null 2>&1
 }
 
+find_system_command() {
+    PATH="$SYSTEM_COMMAND_PATH" command -v "$1" 2>/dev/null
+}
+
+have_system_command() {
+    find_system_command "$1" >/dev/null
+}
+
+is_root() {
+    (( EUID == 0 ))
+}
+
+print_command() {
+    local argument
+
+    printf '[DRY-RUN]'
+    for argument in "$@"; do
+        printf ' %q' "$argument"
+    done
+    printf '\n'
+}
+
+run_command() {
+    if (( DRY_RUN )); then
+        print_command "$@"
+        return 0
+    fi
+
+    "$@"
+}
+
+run_brew_command() {
+    if (( DO_CLEANUP )); then
+        run_command brew "$@"
+    elif (( DRY_RUN )); then
+        print_command env HOMEBREW_NO_INSTALL_CLEANUP=1 brew "$@"
+    else
+        HOMEBREW_NO_INSTALL_CLEANUP=1 brew "$@"
+    fi
+}
+
 load_os_release() {
     if [[ -r /etc/os-release ]]; then
         # /etc/os-release is a system-owned shell-compatible data file.
-        # shellcheck disable=SC1091
         set +u
+        # shellcheck disable=SC1091
         . /etc/os-release
         set -u
 
@@ -89,24 +134,45 @@ load_os_release() {
 }
 
 select_privilege_tool() {
-    if (( EUID == 0 )); then
+    if is_root; then
         PRIVILEGE_TOOL=""
-    elif have_command sudo; then
-        PRIVILEGE_TOOL="sudo"
-    elif have_command doas; then
-        PRIVILEGE_TOOL="doas"
+    elif PRIVILEGE_TOOL="$(find_system_command sudo)" && [[ -n "$PRIVILEGE_TOOL" ]]; then
+        :
+    elif PRIVILEGE_TOOL="$(find_system_command doas)" && [[ -n "$PRIVILEGE_TOOL" ]]; then
+        :
     else
         PRIVILEGE_TOOL="unavailable"
     fi
 }
 
 as_root() {
-    if (( EUID == 0 )); then
-        "$@"
-    elif [[ "$PRIVILEGE_TOOL" == "sudo" ]]; then
-        sudo "$@"
-    elif [[ "$PRIVILEGE_TOOL" == "doas" ]]; then
-        doas "$@"
+    local command_name="$1"
+    local command_path
+    shift
+
+    if [[ "$command_name" == */* ]]; then
+        command_path="$command_name"
+    else
+        command_path="$(find_system_command "$command_name")"
+    fi
+
+    if [[ -z "$command_path" ]]; then
+        error "Required system command is not installed in a trusted location: $command_name"
+        return 127
+    fi
+
+    if (( DRY_RUN )); then
+        if is_root; then
+            print_command "$command_path" "$@"
+        elif [[ "$PRIVILEGE_TOOL" == */sudo || "$PRIVILEGE_TOOL" == */doas ]]; then
+            print_command "$PRIVILEGE_TOOL" "$command_path" "$@"
+        else
+            print_command "<administrator>" "$command_path" "$@"
+        fi
+    elif is_root; then
+        "$command_path" "$@"
+    elif [[ "$PRIVILEGE_TOOL" == */sudo || "$PRIVILEGE_TOOL" == */doas ]]; then
+        "$PRIVILEGE_TOOL" "$command_path" "$@"
     else
         error "This operation requires root privileges, but neither sudo nor doas is installed."
         return 127
@@ -114,18 +180,22 @@ as_root() {
 }
 
 validate_privileges() {
-    if (( EUID == 0 )); then
+    if (( DRY_RUN )); then
+        return 0
+    fi
+
+    if is_root; then
         return 0
     fi
 
     case "$PRIVILEGE_TOOL" in
-        sudo)
+        */sudo)
             info "Requesting administrator privileges..."
-            sudo -v
+            "$PRIVILEGE_TOOL" -v
             ;;
-        doas)
+        */doas)
             info "Requesting administrator privileges..."
-            doas true
+            "$PRIVILEGE_TOOL" "$(find_system_command true)"
             ;;
         *)
             error "Administrator privileges are required, but neither sudo nor doas is available."
@@ -141,8 +211,13 @@ run_task() {
     section "$label"
 
     if "$@"; then
-        SUCCEEDED+=("$label")
-        info "$label completed."
+        if (( DRY_RUN )); then
+            PLANNED+=("$label")
+            info "$label was planned; no changes were made."
+        else
+            SUCCEEDED+=("$label")
+            info "$label completed."
+        fi
     else
         local status=$?
         FAILED+=("$label (exit $status)")
@@ -159,54 +234,65 @@ family_contains() {
     [[ "$family" == *" $needle "* ]]
 }
 
+is_ostree_system() {
+    [[ -e /run/ostree-booted ]]
+}
+
+is_nixos_system() {
+    [[ -e /etc/NIXOS ]]
+}
+
+is_transactional_system() {
+    [[ -r /etc/transactional-update.conf || -d /var/lib/transactional-update ]]
+}
+
 detect_system_manager() {
     # Immutable/image-based systems must be detected before their underlying
     # package tooling, which may also be installed but is not the host updater.
-    if [[ -e /run/ostree-booted ]] && have_command rpm-ostree; then
+    if is_ostree_system && have_system_command rpm-ostree; then
         SYSTEM_MANAGER="rpm-ostree"
         return 0
     fi
 
-    if [[ -e /etc/NIXOS ]] && have_command nixos-rebuild; then
+    if is_nixos_system && have_system_command nixos-rebuild; then
         SYSTEM_MANAGER="nixos"
         return 0
     fi
 
-    if have_command transactional-update \
-        && { [[ -r /etc/transactional-update.conf ]] || [[ -d /var/lib/transactional-update ]]; }; then
+    if have_system_command transactional-update && is_transactional_system; then
         SYSTEM_MANAGER="transactional-update"
         return 0
     fi
 
     # Prefer the package manager associated with the detected distribution.
     if family_contains debian || family_contains ubuntu; then
-        have_command apt-get && SYSTEM_MANAGER="apt"
+        have_system_command apt-get && SYSTEM_MANAGER="apt"
     elif family_contains fedora || family_contains rhel || family_contains centos; then
-        if have_command dnf5; then
+        if have_system_command dnf5; then
             SYSTEM_MANAGER="dnf5"
-        elif have_command dnf; then
+        elif have_system_command dnf; then
             SYSTEM_MANAGER="dnf"
-        elif have_command yum; then
+        elif have_system_command yum; then
             SYSTEM_MANAGER="yum"
         fi
     elif family_contains suse || family_contains opensuse; then
-        have_command zypper && SYSTEM_MANAGER="zypper"
+        have_system_command zypper && SYSTEM_MANAGER="zypper"
     elif family_contains arch || family_contains manjaro; then
-        have_command pacman && SYSTEM_MANAGER="pacman"
+        have_system_command pacman && SYSTEM_MANAGER="pacman"
     elif family_contains alpine; then
-        have_command apk && SYSTEM_MANAGER="apk"
+        have_system_command apk && SYSTEM_MANAGER="apk"
     elif family_contains void; then
-        have_command xbps-install && SYSTEM_MANAGER="xbps"
+        have_system_command xbps-install && SYSTEM_MANAGER="xbps"
     elif family_contains gentoo; then
-        have_command emerge && SYSTEM_MANAGER="emerge"
+        have_system_command emerge && SYSTEM_MANAGER="emerge"
     elif family_contains solus; then
-        have_command eopkg && SYSTEM_MANAGER="eopkg"
+        have_system_command eopkg && SYSTEM_MANAGER="eopkg"
     elif family_contains clear-linux-os || family_contains clearlinux; then
-        have_command swupd && SYSTEM_MANAGER="swupd"
+        have_system_command swupd && SYSTEM_MANAGER="swupd"
     elif family_contains slackware; then
-        have_command slackpkg && SYSTEM_MANAGER="slackpkg"
+        have_system_command slackpkg && SYSTEM_MANAGER="slackpkg"
     elif family_contains mageia || family_contains mandriva; then
-        have_command urpmi && SYSTEM_MANAGER="urpmi"
+        have_system_command urpmi && SYSTEM_MANAGER="urpmi"
     fi
 
     [[ -n "$SYSTEM_MANAGER" ]] && return 0
@@ -214,7 +300,7 @@ detect_system_manager() {
     # Fallback for derivatives with incomplete or unusual os-release metadata.
     local candidate
     for candidate in apt-get dnf5 dnf yum zypper pacman apk xbps-install emerge eopkg swupd slackpkg urpmi; do
-        if have_command "$candidate"; then
+        if have_system_command "$candidate"; then
             case "$candidate" in
                 apt-get)      SYSTEM_MANAGER="apt" ;;
                 xbps-install) SYSTEM_MANAGER="xbps" ;;
@@ -228,14 +314,14 @@ detect_system_manager() {
 }
 
 update_apt() {
-    as_root apt-get clean &&
     as_root apt-get update &&
-    as_root env DEBIAN_FRONTEND=noninteractive apt-get \
+    as_root env PATH="$SYSTEM_COMMAND_PATH" DEBIAN_FRONTEND=noninteractive apt-get \
         -o APT::Get::Always-Include-Phased-Updates=true \
-        dist-upgrade -y || return 1
+        upgrade --with-new-pkgs -y || return 1
 
     if (( DO_CLEANUP )); then
-        as_root env DEBIAN_FRONTEND=noninteractive apt-get autoremove -y
+        as_root env PATH="$SYSTEM_COMMAND_PATH" DEBIAN_FRONTEND=noninteractive apt-get autoremove -y &&
+        as_root apt-get clean
     fi
 }
 
@@ -318,7 +404,7 @@ update_rpm_ostree() {
 }
 
 update_nixos() {
-    if [[ -f /etc/nixos/flake.nix ]] && have_command nix; then
+    if [[ -f /etc/nixos/flake.nix ]] && have_system_command nix; then
         as_root nix flake update --flake /etc/nixos &&
         as_root nixos-rebuild switch --flake /etc/nixos
     else
@@ -365,27 +451,28 @@ update_snap() {
     as_root snap refresh
 }
 
-flatpak_has_user_installation() {
-    [[ -n "$(flatpak remote-list --user --columns=name 2>/dev/null)" ]]
-}
-
-flatpak_has_system_installation() {
-    [[ -n "$(flatpak remote-list --system --columns=name 2>/dev/null)" ]]
-}
-
 update_flatpak() {
     local found=0
     local status=0
+    local user_remotes system_remotes
 
-    if flatpak_has_user_installation; then
+    if ! user_remotes="$(flatpak remote-list --user --columns=name 2>&1)"; then
+        printf '%s\n' "$user_remotes" >&2
+        error "Unable to inspect the Flatpak user installation."
+        status=1
+    elif [[ -n "$user_remotes" ]]; then
         found=1
-        flatpak update --user -y || status=1
+        run_command flatpak update --user -y || status=1
         if (( DO_CLEANUP )); then
-            flatpak uninstall --user --unused -y || status=1
+            run_command flatpak uninstall --user --unused -y || status=1
         fi
     fi
 
-    if flatpak_has_system_installation; then
+    if ! system_remotes="$(flatpak remote-list --system --columns=name 2>&1)"; then
+        printf '%s\n' "$system_remotes" >&2
+        error "Unable to inspect the Flatpak system installation."
+        status=1
+    elif [[ -n "$system_remotes" ]]; then
         found=1
         as_root flatpak update --system -y || status=1
         if (( DO_CLEANUP )); then
@@ -401,16 +488,16 @@ update_flatpak() {
 }
 
 update_homebrew() {
-    if (( EUID == 0 )); then
+    if is_root; then
         error "Homebrew must not be run as root. Run $SCRIPT_NAME as your normal user instead of with sudo."
         return 1
     fi
 
-    brew update &&
-    brew upgrade || return 1
+    run_brew_command update &&
+    run_brew_command upgrade || return 1
 
     if (( DO_CLEANUP )); then
-        brew cleanup
+        run_brew_command cleanup
     fi
 }
 
@@ -423,6 +510,13 @@ print_summary() {
     if ((${#SUCCEEDED[@]})); then
         printf '\nCompleted:\n'
         for item in "${SUCCEEDED[@]}"; do
+            printf '  - %s\n' "$item"
+        done
+    fi
+
+    if ((${#PLANNED[@]})); then
+        printf '\nPlanned (dry run; not executed):\n'
+        for item in "${PLANNED[@]}"; do
             printf '  - %s\n' "$item"
         done
     fi
@@ -457,6 +551,9 @@ main() {
             --no-cleanup)
                 DO_CLEANUP=0
                 ;;
+            --dry-run)
+                DRY_RUN=1
+                ;;
             -h|--help)
                 usage
                 return 0
@@ -479,8 +576,9 @@ main() {
         return 2
     fi
 
-    if (( EUID == 0 )) && [[ -n "${SUDO_USER:-}" ]]; then
-        warn "Run this script without sudo. It elevates only the commands that need it."
+    if is_root; then
+        error "Run this script as a normal user, not as root or through sudo."
+        return 2
     fi
 
     load_os_release
@@ -503,13 +601,13 @@ main() {
     fi
 
     if (( DO_ADDITIONAL_MANAGERS )); then
-        if have_command snap; then
+        if have_system_command snap; then
             run_task "Snap packages" update_snap
         else
             SKIPPED+=("Snap")
         fi
 
-        if have_command flatpak; then
+        if have_system_command flatpak; then
             run_task "Flatpak applications and runtimes" update_flatpak
         else
             SKIPPED+=("Flatpak")
@@ -531,7 +629,13 @@ main() {
         return 1
     fi
 
-    info "All detected package managers completed successfully."
+    if (( DRY_RUN )); then
+        info "Dry run completed without executing mutating commands."
+    else
+        info "All detected package managers completed successfully."
+    fi
 }
 
-main "$@"
+if [[ "${UPDATE_EVERYTHING_TESTING:-0}" != "1" ]]; then
+    main "$@"
+fi

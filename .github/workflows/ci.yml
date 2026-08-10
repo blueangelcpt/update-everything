@@ -1,0 +1,101 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  linux:
+    name: Linux shell validation
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Validate Bash syntax
+        run: bash -n linux/update-everything.sh macos/update-everything.sh tests/run-shell-tests.sh tests/shell/*.sh
+
+      - name: Install pinned ShellCheck
+        shell: bash
+        run: |
+          curl --fail --location --silent --show-error \
+            --output "$RUNNER_TEMP/shellcheck.tar.xz" \
+            https://github.com/koalaman/shellcheck/releases/download/v0.10.0/shellcheck-v0.10.0.linux.x86_64.tar.xz
+          echo '6c881ab0698e4e6ea235245f22832860544f17ba386442fe7e9d629f8cbedf87  '"$RUNNER_TEMP/shellcheck.tar.xz" | sha256sum --check
+          tar -xJf "$RUNNER_TEMP/shellcheck.tar.xz" -C "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/shellcheck-v0.10.0" >> "$GITHUB_PATH"
+
+      - name: Run ShellCheck
+        run: shellcheck linux/update-everything.sh macos/update-everything.sh tests/run-shell-tests.sh tests/shell/*.sh
+
+      - name: Run shell tests
+        run: tests/run-shell-tests.sh
+
+  macos:
+    name: macOS Bash 3.2 compatibility
+    runs-on: macos-15
+    timeout-minutes: 10
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Verify Apple Bash and syntax
+        shell: bash
+        run: |
+          /bin/bash --version | head -n 1
+          /bin/bash --version | head -n 1 | grep 'version 3\.2'
+          /bin/bash -n macos/update-everything.sh tests/run-shell-tests.sh tests/shell/*.sh
+
+      - name: Run shell tests with Apple Bash
+        run: /bin/bash tests/run-shell-tests.sh
+
+  windows:
+    name: Windows PowerShell 5.1 validation
+    runs-on: windows-2022
+    timeout-minutes: 15
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Validate PowerShell parser
+        shell: powershell
+        run: |
+          $tokens = $null
+          $errors = $null
+          $null = [System.Management.Automation.Language.Parser]::ParseFile(
+            (Resolve-Path .\windows\update-everything.ps1).Path,
+            [ref]$tokens,
+            [ref]$errors
+          )
+          if ($errors.Count -gt 0) {
+            $errors | Format-List | Out-String | Write-Error
+            exit 1
+          }
+
+      - name: Install pinned PowerShell test tools
+        shell: powershell
+        run: |
+          [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+          Install-Module Pester -RequiredVersion 5.7.1 -Scope CurrentUser -Force -AllowClobber
+          Install-Module PSScriptAnalyzer -RequiredVersion 1.25.0 -Scope CurrentUser -Force
+
+      - name: Run PSScriptAnalyzer
+        shell: powershell
+        run: |
+          Import-Module PSScriptAnalyzer -RequiredVersion 1.25.0 -Force
+          $issues = @(Invoke-ScriptAnalyzer -Path .\windows\update-everything.ps1 -Settings .\PSScriptAnalyzerSettings.psd1)
+          if ($issues.Count -gt 0) {
+            $issues | Format-Table -AutoSize | Out-String | Write-Error
+            exit 1
+          }
+
+      - name: Run Pester tests
+        shell: powershell
+        run: |
+          Import-Module Pester -RequiredVersion 5.7.1 -Force
+          Invoke-Pester -Path .\tests\windows -CI
