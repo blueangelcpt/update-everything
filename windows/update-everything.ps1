@@ -43,6 +43,10 @@
     Updater is kept somewhere the script does not search, such as a
     downloads folder.
 
+.PARAMETER DryRun
+    Detect installed updaters and report the mutating commands that would run,
+    without installing updates, accepting EULAs, or cleaning up packages.
+
 .PARAMETER ShowVersion
     Print the script version and exit.
 
@@ -70,14 +74,19 @@ param(
     [switch]$IncludeDrivers,
     [switch]$NoCleanup,
     [string]$PatchMyPCPath,
+    [switch]$DryRun,
     [Alias('Version')]
-    [switch]$ShowVersion
+    [switch]$ShowVersion,
+    # Collected so that an unrecognised option is reported by this script with
+    # exit code 2, rather than as a PowerShell parameter binding error.
+    [Parameter(ValueFromRemainingArguments = $true)]
+    [string[]]$UnrecognisedArguments
 )
 
 Set-StrictMode -Version 3.0
 
 $ScriptName = $MyInvocation.MyCommand.Name
-$ScriptVersion = '1.0.0'
+$ScriptVersion = '2.0.0'
 
 # Progress bars corrupt the output when an updater writes to the console
 # while the script is also writing to it.
@@ -86,6 +95,7 @@ $ProgressPreference = 'SilentlyContinue'
 $script:Succeeded = @()
 $script:Failed = @()
 $script:Skipped = @()
+$script:Planned = @()
 $script:RebootRequired = $false
 $script:LastExternalExitCode = 0
 $script:ExitCode = 0
@@ -149,8 +159,13 @@ function Invoke-Task {
 
     try {
         & $Action
-        $script:Succeeded += $Label
-        Write-Info "$Label completed."
+        if ($DryRun) {
+            $script:Planned += $Label
+            Write-Info "$Label was evaluated; no changes were made."
+        } else {
+            $script:Succeeded += $Label
+            Write-Info "$Label completed."
+        }
     } catch {
         $script:Failed += "$Label ($($_.Exception.Message))"
         Write-Fail "$Label failed: $($_.Exception.Message) Continuing with the remaining updaters."
@@ -167,6 +182,21 @@ function Add-SkippedItem {
     Write-Info "Skipping $Label - $Reason."
 }
 
+function Assert-WindowsUpdateResult {
+    param(
+        [Parameter(Mandatory = $true)]$Result,
+        [Parameter(Mandatory = $true)][string]$Operation
+    )
+
+    if ($Result.ResultCode -eq 2) { return }
+
+    $hresultText = ''
+    if ($Result.PSObject.Properties['HResult']) {
+        $hresultText = ' (HRESULT 0x{0:X8})' -f $Result.HResult
+    }
+    throw "Windows Update $Operation reported result code $($Result.ResultCode)$hresultText."
+}
+
 function Invoke-External {
     param(
         [Parameter(Mandatory = $true)][string]$FilePath,
@@ -175,7 +205,17 @@ function Invoke-External {
         [switch]$Tolerate
     )
 
-    Write-Info "Running: `"$FilePath`" $($Arguments -join ' ')"
+    $displayArguments = @($Arguments | ForEach-Object {
+        if ($_ -match '[\s`"]') { '"{0}"' -f ($_ -replace '"', '\"') } else { $_ }
+    })
+
+    if ($DryRun) {
+        Write-Host "[DRY-RUN] `"$FilePath`" $($displayArguments -join ' ')"
+        $script:LastExternalExitCode = 0
+        return
+    }
+
+    Write-Info "Running: `"$FilePath`" $($displayArguments -join ' ')"
 
     # The command writes to this function's output stream, which reaches the
     # console unchanged, so its progress stays visible and redirectable.
@@ -220,6 +260,16 @@ function Get-CommandPath {
     return $null
 }
 
+function Get-ProgramFilesRoot {
+    $roots = @(
+        $env:ProgramW6432,
+        $env:ProgramFiles,
+        ${env:ProgramFiles(x86)}
+    )
+
+    return @($roots | Where-Object { $_ } | Select-Object -Unique)
+}
+
 function Get-PackageFolderVersion {
     param([Parameter(Mandatory = $true)][string]$Name)
 
@@ -232,23 +282,41 @@ function Get-PackageFolderVersion {
 }
 
 function Get-WinGetPath {
-    $onPath = Get-CommandPath -Names @('winget.exe')
-    if ($onPath) { return $onPath }
+    param([bool]$IsElevated = $false)
 
-    # WinGet is not always on the PATH of an elevated session, because the
-    # App Execution Alias lives in the invoking user's profile.
-    $alias = Join-ExistingPath -Root $env:LOCALAPPDATA -ChildPath 'Microsoft\WindowsApps\winget.exe'
-    if ($alias) { return $alias }
+    # Never execute a PATH or per-user App Execution Alias candidate from an
+    # elevated session. Both locations can be changed by an unprivileged user.
+    if (-not $IsElevated) {
+        $onPath = Get-CommandPath -Names @('winget.exe')
+        if ($onPath) { return $onPath }
 
-    if (-not $env:ProgramFiles) { return $null }
+        $alias = Join-ExistingPath -Root $env:LOCALAPPDATA -ChildPath 'Microsoft\WindowsApps\winget.exe'
+        if ($alias) { return $alias }
+    }
 
-    $packageRoot = Join-Path -Path $env:ProgramFiles -ChildPath 'WindowsApps'
-    $package = Get-ChildItem -Path $packageRoot -Filter 'Microsoft.DesktopAppInstaller_*_8wekyb3d8bbwe' `
-        -Directory -ErrorAction SilentlyContinue |
-        Sort-Object -Property @{ Expression = { Get-PackageFolderVersion -Name $_.Name } } -Descending |
+    $packages = @()
+    foreach ($root in (Get-ProgramFilesRoot)) {
+        $packageRoot = Join-Path -Path $root -ChildPath 'WindowsApps'
+        $packages += @(Get-ChildItem -Path $packageRoot -Filter 'Microsoft.DesktopAppInstaller_*_8wekyb3d8bbwe' `
+            -Directory -ErrorAction SilentlyContinue)
+    }
+
+    $wingetCandidates = @()
+    foreach ($package in $packages) {
+        $path = Join-ExistingPath -Root $package.FullName -ChildPath 'winget.exe'
+        if ($path) {
+            $wingetCandidates += [pscustomobject]@{
+                Path = $path
+                Version = Get-PackageFolderVersion -Name $package.Name
+            }
+        }
+    }
+
+    $newest = $wingetCandidates |
+        Sort-Object -Property Version -Descending |
         Select-Object -First 1
 
-    if ($package) { return (Join-ExistingPath -Root $package.FullName -ChildPath 'winget.exe') }
+    if ($newest) { return $newest.Path }
 
     return $null
 }
@@ -271,41 +339,56 @@ function Get-WinGetVersion {
 }
 
 function Get-ChocolateyPath {
-    $onPath = Get-CommandPath -Names @('choco.exe')
-    if ($onPath) { return $onPath }
+    $configured = Join-ExistingPath -Root $env:ChocolateyInstall -ChildPath 'bin\choco.exe'
+    if ($configured) { return $configured }
 
-    return (Join-ExistingPath -Root $env:ChocolateyInstall -ChildPath 'bin\choco.exe')
+    return (Join-ExistingPath -Root $env:ProgramData -ChildPath 'chocolatey\bin\choco.exe')
+}
+
+function Test-PatchMyPCPublisher {
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    try {
+        $signature = Get-AuthenticodeSignature -LiteralPath $Path -ErrorAction Stop
+    } catch {
+        Write-Verbose "Unable to verify the Patch My PC signature: $($_.Exception.Message)"
+        return $false
+    }
+
+    $expectedPublisher = '(?i)(?:^|,\s*)(?:CN|O)=("?Patch My PC(?:\\,|,) LLC"?)(?:,|$)'
+    return ($signature.Status -eq 'Valid' -and
+        $signature.SignerCertificate -and
+        $signature.SignerCertificate.Subject -match $expectedPublisher)
 }
 
 function Get-PatchMyPCPath {
     if ($PatchMyPCPath) {
-        if (Test-Path -LiteralPath $PatchMyPCPath -PathType Leaf) { return $PatchMyPCPath }
-        Write-Warn "The path given by -PatchMyPCPath does not exist: $PatchMyPCPath"
-        return $null
+        if (-not (Test-Path -LiteralPath $PatchMyPCPath -PathType Leaf)) {
+            throw "The path given by -PatchMyPCPath does not exist: $PatchMyPCPath"
+        }
+        if (-not (Test-PatchMyPCPublisher -Path $PatchMyPCPath)) {
+            throw 'The file given by -PatchMyPCPath does not have a valid Patch My PC Authenticode signature.'
+        }
+        return $PatchMyPCPath
     }
 
-    $onPath = Get-CommandPath -Names @('PatchMyPC.exe')
-    if ($onPath) { return $onPath }
-
-    $roots = @($env:ProgramFiles, ${env:ProgramFiles(x86)}, $env:ProgramData, $env:LOCALAPPDATA)
-    foreach ($root in $roots) {
+    # Automatic discovery is limited to machine-wide locations. Portable
+    # copies in user-writable directories require an explicit parameter.
+    foreach ($root in (Get-ProgramFilesRoot)) {
         $candidate = Join-ExistingPath -Root $root -ChildPath 'Patch My PC\PatchMyPC.exe'
-        if ($candidate) { return $candidate }
+        if ($candidate -and (Test-PatchMyPCPublisher -Path $candidate)) { return $candidate }
+        if ($candidate) { Write-Warn "Ignoring an untrusted Patch My PC candidate: $candidate" }
     }
 
-    $candidate = Join-ExistingPath -Root $env:SystemDrive -ChildPath 'PatchMyPC\PatchMyPC.exe'
-    if ($candidate) { return $candidate }
-
-    $appPaths = @(
-        'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\PatchMyPC.exe',
-        'HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\PatchMyPC.exe'
-    )
+    $appPaths = @('HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\PatchMyPC.exe')
 
     foreach ($appPath in $appPaths) {
         try {
             $entry = Get-ItemProperty -Path $appPath -ErrorAction Stop
             $registered = $entry.PSObject.Properties['(default)']
-            if ($registered -and $registered.Value -and (Test-Path -LiteralPath $registered.Value -PathType Leaf)) {
+            if ($registered -and $registered.Value -and
+                (Test-Path -LiteralPath $registered.Value -PathType Leaf) -and
+                (Test-PatchMyPCPublisher -Path $registered.Value)) {
                 return $registered.Value
             }
         } catch {
@@ -317,6 +400,12 @@ function Get-PatchMyPCPath {
 }
 
 function Update-WindowsUpdate {
+    if ($DryRun) {
+        Write-Info 'Using the Windows Update Agent COM API for a read-only update search.'
+        Update-WindowsUpdateWithComApi
+        return
+    }
+
     $module = Get-Module -ListAvailable -Name 'PSWindowsUpdate' -ErrorAction SilentlyContinue |
         Select-Object -First 1
 
@@ -350,6 +439,13 @@ function Update-WindowsUpdateWithModule {
         foreach ($result in $results) {
             Write-Info "Installed: $($result.Title)"
         }
+
+        $failedResults = @($results | Where-Object {
+            $_.PSObject.Properties['Result'] -and $_.Result -match 'Failed|Aborted'
+        })
+        if ($failedResults.Count -gt 0) {
+            throw "$($failedResults.Count) Windows update(s) reported a failed or aborted result."
+        }
     }
 
     try {
@@ -359,15 +455,22 @@ function Update-WindowsUpdateWithModule {
     }
 }
 
+function Get-WindowsUpdateCriterion {
+    $criteria = 'IsInstalled=0 AND IsHidden=0'
+    if (-not $IncludeDrivers) { $criteria += " AND Type='Software'" }
+    return $criteria
+}
+
 function Update-WindowsUpdateWithComApi {
     $session = New-Object -ComObject 'Microsoft.Update.Session'
     $session.ClientApplicationID = 'update-everything'
 
-    $criteria = 'IsInstalled=0 AND IsHidden=0'
-    if (-not $IncludeDrivers) { $criteria += " AND Type='Software'" }
+    $criteria = Get-WindowsUpdateCriterion
 
     Write-Info 'Searching for available updates...'
     $searchResult = $session.CreateUpdateSearcher().Search($criteria)
+
+    Assert-WindowsUpdateResult -Result $searchResult -Operation 'search'
 
     if ($searchResult.Updates.Count -eq 0) {
         Write-Info 'No applicable Windows updates were found.'
@@ -379,10 +482,11 @@ function Update-WindowsUpdateWithComApi {
     foreach ($update in $searchResult.Updates) {
         if ($update.InstallationBehavior.CanRequestUserInput) {
             Write-Warn "Skipping `"$($update.Title)`" because it requires user input."
+            Add-SkippedItem -Label "Windows update: $($update.Title)" -Reason 'requires user input'
             continue
         }
 
-        if (-not $update.EulaAccepted) { $update.AcceptEula() }
+        if (-not $DryRun -and -not $update.EulaAccepted) { $update.AcceptEula() }
 
         Write-Info "Selected: $($update.Title)"
         $null = $selected.Add($update)
@@ -393,10 +497,19 @@ function Update-WindowsUpdateWithComApi {
         return
     }
 
+    if ($DryRun) {
+        Write-Host "[DRY-RUN] Would download and install $($selected.Count) selected Windows update(s)."
+        return
+    }
+
     Write-Info "Downloading $($selected.Count) update(s)..."
     $downloader = $session.CreateUpdateDownloader()
     $downloader.Updates = $selected
-    $null = $downloader.Download()
+    $downloadResult = $downloader.Download()
+    $downloadHadErrors = ($downloadResult.ResultCode -ne 2)
+    if ($downloadHadErrors) {
+        Write-Warn "Windows Update download reported result code $($downloadResult.ResultCode). Installable downloads will still be attempted."
+    }
 
     $installable = New-Object -ComObject 'Microsoft.Update.UpdateColl'
     foreach ($update in $selected) {
@@ -404,6 +517,8 @@ function Update-WindowsUpdateWithComApi {
             $null = $installable.Add($update)
         } else {
             Write-Warn "Skipping `"$($update.Title)`" because it did not download."
+            Add-SkippedItem -Label "Windows update: $($update.Title)" -Reason 'download failed'
+            $downloadHadErrors = $true
         }
     }
 
@@ -418,14 +533,12 @@ function Update-WindowsUpdateWithComApi {
 
     if ($installResult.RebootRequired) { $script:RebootRequired = $true }
 
-    # ResultCode: 2 succeeded, 3 succeeded with errors, 4 failed, 5 aborted.
-    switch ($installResult.ResultCode) {
-        2 { Write-Info 'All selected updates were installed.' }
-        3 { Write-Warn 'The updates were installed, but one or more reported an error.' }
-        default {
-            $hresult = '0x{0:X8}' -f $installResult.HResult
-            throw "Windows Update reported result code $($installResult.ResultCode) (HRESULT $hresult)."
-        }
+    # ResultCode 3 is partial success and must still make the task fail.
+    Assert-WindowsUpdateResult -Result $installResult -Operation 'installation'
+    Write-Info 'All selected updates were installed.'
+
+    if ($downloadHadErrors) {
+        throw 'One or more selected Windows updates failed to download.'
     }
 }
 
@@ -445,7 +558,7 @@ function Update-WinGetPackage {
 
     # Packages whose installed version cannot be determined are left alone
     # unless --include-unknown is passed, which WinGet added in 1.2.
-    if (-not $version -or $version -ge [version]'1.2') {
+    if ($version -and $version -ge [version]'1.2') {
         $arguments += '--include-unknown'
     }
 
@@ -454,20 +567,39 @@ function Update-WinGetPackage {
     }
 
     Invoke-External -FilePath $Path -Arguments @('source', 'update') -Tolerate
+    $sourceUpdateExitCode = $script:LastExternalExitCode
 
     # 0x8A15002B is "no applicable upgrade found", which is a normal outcome.
     Invoke-External -FilePath $Path -Arguments $arguments -SuccessExitCodes @(0, -1978335189)
+
+    if ($sourceUpdateExitCode -ne 0) {
+        throw "WinGet upgraded packages, but source update exited with code $sourceUpdateExitCode."
+    }
 }
 
 function Update-ChocolateyPackage {
     param([Parameter(Mandatory = $true)][string]$Path)
 
+    # Chocolatey documents 0, 1605, 1614, 1641 and 3010 as its valid exit codes.
     # 1641 and 3010 mean a package installed successfully and wants a reboot.
+    # 350 and 1604 are the reboot-detection codes; they are accepted here only
+    # so that the reboot can be reported before the task is failed below. Any
+    # other code, including 2, is a genuine failure and must not be swallowed.
     Invoke-External -FilePath $Path `
-        -Arguments @('upgrade', 'all', '--yes', '--no-progress') `
-        -SuccessExitCodes @(0, 1641, 3010)
+        -Arguments @('upgrade', 'all', '--yes', '--no-progress', '--use-package-exit-codes') `
+        -SuccessExitCodes @(0, 1605, 1614, 1641, 3010, 350, 1604)
 
     if ($script:LastExternalExitCode -in @(1641, 3010)) { $script:RebootRequired = $true }
+
+    if ($script:LastExternalExitCode -eq 350) {
+        $script:RebootRequired = $true
+        throw 'Chocolatey did not run because a reboot is already pending.'
+    }
+
+    if ($script:LastExternalExitCode -eq 1604) {
+        $script:RebootRequired = $true
+        throw 'Chocolatey stopped part-way through because a package requested a reboot.'
+    }
 }
 
 function Update-ScoopPackage {
@@ -477,18 +609,37 @@ function Update-ScoopPackage {
     Invoke-External -FilePath $Path -Arguments @('update', '*')
 
     if (-not $NoCleanup) {
-        Invoke-External -FilePath $Path -Arguments @('cleanup', '*') -Tolerate
-        Invoke-External -FilePath $Path -Arguments @('cache', 'rm', '*') -Tolerate
+        $cleanupErrors = @()
+        try {
+            Invoke-External -FilePath $Path -Arguments @('cleanup', '*')
+        } catch {
+            $cleanupErrors += $_.Exception.Message
+            Write-Warn $_.Exception.Message
+        }
+        try {
+            Invoke-External -FilePath $Path -Arguments @('cache', 'rm', '*')
+        } catch {
+            $cleanupErrors += $_.Exception.Message
+            Write-Warn $_.Exception.Message
+        }
+        if ($cleanupErrors.Count -gt 0) {
+            throw "Scoop update succeeded, but $($cleanupErrors.Count) cleanup operation(s) failed."
+        }
     }
 }
 
 function Update-PatchMyPCApplication {
     param([Parameter(Mandatory = $true)][string]$Path)
 
-    # /auto updates every out-of-date application without showing the
-    # selection interface, and closes the updater when it has finished.
-    Write-Info "Running: `"$Path`" /auto"
-    $process = Start-Process -FilePath $Path -ArgumentList '/auto' -Wait -PassThru
+    # /s is Patch My PC Home Updater's fully silent automatic mode. /auto
+    # performs automatic updates but still opens its graphical interface.
+    if ($DryRun) {
+        Write-Host "[DRY-RUN] `"$Path`" /s"
+        return
+    }
+
+    Write-Info "Running: `"$Path`" /s"
+    $process = Start-Process -FilePath $Path -ArgumentList '/s' -Wait -PassThru
 
     if ($process.ExitCode -ne 0) {
         throw "PatchMyPC.exe exited with code $($process.ExitCode)."
@@ -496,6 +647,11 @@ function Update-PatchMyPCApplication {
 }
 
 function Update-MicrosoftStoreApplication {
+    if ($DryRun) {
+        Write-Host '[DRY-RUN] Would request a Microsoft Store application update scan.'
+        return
+    }
+
     $instance = Get-CimInstance -Namespace 'Root\cimv2\mdm\dmmap' `
         -ClassName 'MDM_EnterpriseModernAppManagement_AppManagement01' -ErrorAction Stop |
         Select-Object -First 1
@@ -549,6 +705,12 @@ function Write-Summary {
         foreach ($item in $script:Succeeded) { Write-Host "  - $item" }
     }
 
+    if ($script:Planned.Count -gt 0) {
+        Write-Host ''
+        Write-Host 'Evaluated (dry run; not executed):'
+        foreach ($item in $script:Planned) { Write-Host "  - $item" }
+    }
+
     if ($script:Skipped.Count -gt 0) {
         Write-Host ''
         Write-Host 'Not installed or skipped:'
@@ -570,7 +732,11 @@ function Write-Summary {
         Write-Fail 'Updates finished with one or more failures.'
         $script:ExitCode = 1
     } else {
-        Write-Info 'All detected updaters completed successfully.'
+        if ($DryRun) {
+            Write-Info 'Dry run completed without executing mutating commands.'
+        } else {
+            Write-Info 'All detected updaters completed successfully.'
+        }
     }
 }
 
@@ -582,7 +748,7 @@ function Invoke-SystemUpdate {
         return
     }
 
-    if (-not $IsElevated) {
+    if (-not $IsElevated -and -not $DryRun) {
         $script:Failed += 'Windows Update (administrator privileges are required)'
         Write-Fail 'Windows Update needs an elevated PowerShell session. Re-run this script as an administrator.'
         return
@@ -594,7 +760,7 @@ function Invoke-SystemUpdate {
 function Invoke-ApplicationUpdate {
     param([Parameter(Mandatory = $true)][bool]$IsElevated)
 
-    $wingetPath = Get-WinGetPath
+    $wingetPath = Get-WinGetPath -IsElevated $IsElevated
     if ($wingetPath) {
         Invoke-Task -Label 'WinGet packages' -Action { Update-WinGetPackage -Path $wingetPath }
     } else {
@@ -621,26 +787,52 @@ function Invoke-ApplicationUpdate {
         Invoke-Task -Label 'Scoop packages' -Action { Update-ScoopPackage -Path $scoopPath }
     }
 
-    $patchMyPcPath = Get-PatchMyPCPath
+    $patchMyPcPath = $null
+    $patchLookupFailed = $false
+    try {
+        $patchMyPcPath = Get-PatchMyPCPath
+    } catch {
+        $patchLookupFailed = $true
+        $script:Failed += "Patch My PC applications ($($_.Exception.Message))"
+        Write-Fail "Patch My PC discovery failed: $($_.Exception.Message) Continuing with the remaining updaters."
+    }
+
     if ($patchMyPcPath) {
         Invoke-Task -Label 'Patch My PC applications' -Action { Update-PatchMyPCApplication -Path $patchMyPcPath }
-    } else {
+    } elseif (-not $patchLookupFailed) {
         Add-SkippedItem -Label 'Patch My PC Home Updater' -Reason 'not found, or pass -PatchMyPCPath to point at it'
     }
 
     $storeClass = Get-CimClass -Namespace 'Root\cimv2\mdm\dmmap' `
         -ClassName 'MDM_EnterpriseModernAppManagement_AppManagement01' -ErrorAction SilentlyContinue
 
-    if ($storeClass) {
-        Invoke-Task -Label 'Microsoft Store applications' -Action { Update-MicrosoftStoreApplication }
-    } else {
+    if (-not $storeClass) {
         Add-SkippedItem -Label 'Microsoft Store' -Reason 'the application management class is not available'
+    } elseif (-not $IsElevated -and -not $DryRun) {
+        # The MDM bridge provider only answers an administrator, so calling it
+        # from a normal session fails with access denied rather than scanning.
+        Add-SkippedItem -Label 'Microsoft Store' -Reason 'the update scan requires an elevated PowerShell session'
+    } else {
+        Invoke-Task -Label 'Microsoft Store update scan' -Action { Update-MicrosoftStoreApplication }
     }
 }
 
 function Invoke-Main {
+    if ($UnrecognisedArguments) {
+        Write-Fail "Unknown option: $($UnrecognisedArguments -join ' ')"
+        Write-Host "Run 'Get-Help $ScriptName -Detailed' for the supported options."
+        $script:ExitCode = 2
+        return
+    }
+
     if ($ShowVersion) {
         Write-Host "$ScriptName $ScriptVersion"
+        return
+    }
+
+    if ($SystemOnly -and $SkipWindowsUpdate) {
+        Write-Fail '-SystemOnly and -SkipWindowsUpdate cannot be used together.'
+        $script:ExitCode = 2
         return
     }
 
@@ -656,7 +848,9 @@ function Invoke-Main {
     Write-Host "$ScriptName $ScriptVersion"
     Write-Info "Detected operating system: $operatingSystem"
 
-    if ($isElevated) {
+    if ($DryRun) {
+        Write-Info 'Dry-run mode will not require elevation or execute mutating commands.'
+    } elseif ($isElevated) {
         Write-Info 'Running with administrator privileges.'
     } else {
         Write-Warn 'Running without administrator privileges. Windows Update and Chocolatey cannot run.'
@@ -673,5 +867,7 @@ function Invoke-Main {
     Write-Summary -OperatingSystem $operatingSystem
 }
 
-Invoke-Main
-exit $script:ExitCode
+if ($env:UPDATE_EVERYTHING_TESTING -ne '1') {
+    Invoke-Main
+    exit $script:ExitCode
+}
