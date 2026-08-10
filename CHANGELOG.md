@@ -16,6 +16,22 @@ support.
 - Change APT updates from removal-capable `dist-upgrade` to
   `upgrade --with-new-pkgs`; make `--no-cleanup` consistently suppress APT
   cache and unused-dependency cleanup.
+- Stop overriding Ubuntu's phased-update rollout by default. Packages APT keeps
+  back are discovered with an unprivileged simulation, named in a new "Held
+  back" section of the Linux summary, and installed only when the new
+  `--include-phased-updates` option is given.
+- Report a Linux reboot requirement from `/run/reboot-required` as well as
+  `/var/run/reboot-required`, and from `needs-restarting -r` on DNF and YUM
+  systems.
+- Stop treating Chocolatey exit code `2` as success. Only the exit codes
+  Chocolatey documents as valid are accepted, and the reboot-detection codes
+  `350` and `1604` set the reboot notice and then fail the task, because
+  packages were left un-upgraded.
+- Skip the Microsoft Store update scan in a session that is not elevated,
+  instead of failing the run with an access-denied error that a normal user
+  cannot avoid.
+- Report an unrecognised Windows option from the script with exit code `2`
+  rather than leaving it to PowerShell's parameter binder.
 - Correct macOS release filtering so maintenance updates for the installed
   release remain eligible even when that release is above the configured
   ceiling; reject older-release offers and malformed macOS records safely.
@@ -49,8 +65,14 @@ support.
 - Add Pester tests for PowerShell 5.1 behavior, external exit codes, elevation,
   signed updater discovery, Scoop, WinGet compatibility, dry runs, and process
   option handling.
+- Run every shell suite under the interpreter that launched the runner, so the
+  macOS job really exercises Apple's Bash 3.2 instead of a newer bash found
+  earlier on `PATH`, and make the suites hermetic so they pass on any host.
+- Add a static Bash 3.2 compatibility check that rejects post-3.2 features and
+  unguarded empty-array expansions, which `set -u` rejects before Bash 4.4.
 - Add least-privilege GitHub Actions jobs for Linux, macOS Bash 3.2, and
-  Windows PowerShell 5.1, with pinned actions and test-tool versions and no live
-  operating-system updates.
+  Windows PowerShell 5.1, with pinned actions and test-tool versions, checkout
+  credentials not persisted, per-job timeouts, and no live operating-system
+  updates.
 
 [2.0.0]: https://github.com/blueangelcpt/update-everything/releases/tag/v2.0.0

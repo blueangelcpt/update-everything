@@ -496,10 +496,13 @@ EOF
         return "$status"
     fi
 
+    # Indexed rather than a whole-array expansion, because Bash 3.2 treats
+    # expanding an empty array as an unbound variable under `set -u`.
     local restart_offered=0
-    local flag
-    for flag in "${restart_flags[@]}"; do
-        (( flag )) && restart_offered=1
+    local scan=0
+    while (( scan < ${#restart_flags[@]} )); do
+        (( restart_flags[scan] )) && restart_offered=1
+        scan=$((scan + 1))
     done
 
     if [[ "$ARCHITECTURE" == "arm64" ]] && (( restart_offered )); then

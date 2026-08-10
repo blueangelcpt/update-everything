@@ -15,12 +15,24 @@ For shell changes:
 
 ```bash
 bash -n linux/update-everything.sh macos/update-everything.sh
-shellcheck linux/update-everything.sh macos/update-everything.sh tests/run-shell-tests.sh tests/shell/*.sh
+shellcheck linux/update-everything.sh macos/update-everything.sh tests/*.sh tests/shell/*.sh
 tests/run-shell-tests.sh
+tests/check-versions.sh
 ```
 
 The macOS script and its tests must also pass Apple's GNU Bash 3.2. Avoid
-associative arrays and other post-3.2 features.
+associative arrays and other post-3.2 features, and keep every whole-array
+expansion behind an element-count guard, because `set -u` rejects expanding an
+empty array before Bash 4.4. `tests/shell/test-bash32-compat.sh` checks both
+statically; on a Mac, run the whole suite under the real interpreter:
+
+```bash
+/bin/bash tests/run-shell-tests.sh
+```
+
+Tests must stay hermetic. Replace command discovery and execution with shell
+functions rather than relying on what happens to be installed, so that each
+suite gives the same result on any host.
 
 For Windows changes, use Windows PowerShell 5.1:
 

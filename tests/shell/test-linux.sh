@@ -155,20 +155,157 @@ test_privilege_tool_selection() {
     assert_equal unavailable "$PRIVILEGE_TOOL"
 }
 
+# Every APT test runs entirely through mocked command discovery, so it behaves
+# identically on a machine that has no APT at all, including a macOS runner.
+mock_trusted_commands() {
+    find_system_command() { printf '/usr/bin/%s\n' "$1"; }
+    # Invoked indirectly by the script under test.
+    # shellcheck disable=SC2317
+    have_system_command() { return 0; }
+    is_root() { return 1; }
+    PRIVILEGE_TOOL=/usr/bin/sudo
+}
+
 test_apt_cleanup_and_safe_upgrade() {
     local output
-    DRY_RUN=1; DO_CLEANUP=0; PRIVILEGE_TOOL=/usr/bin/sudo
-    is_root() { return 1; }
+    mock_trusted_commands
+    apt_kept_back_packages() { printf ''; }
+    DRY_RUN=1; DO_CLEANUP=0; HELD_BACK=()
     output="$(update_apt 2>&1)" || return 1
-    assert_contains "$output" 'Always-Include-Phased-Updates=true' || return 1
     assert_contains "$output" 'upgrade --with-new-pkgs -y' || return 1
     assert_not_contains "$output" 'autoremove' || return 1
     assert_not_contains "$output" 'apt-get clean' || return 1
+    assert_not_contains "$output" 'dist-upgrade' || return 1
 
     DO_CLEANUP=1
     output="$(update_apt 2>&1)" || return 1
     assert_contains "$output" 'autoremove -y' || return 1
     assert_contains "$output" 'apt-get clean'
+}
+
+test_phased_updates_are_held_back_by_default() {
+    local output
+    mock_trusted_commands
+    apt_kept_back_packages() { printf ''; }
+    DRY_RUN=1; DO_CLEANUP=0; HELD_BACK=()
+
+    INCLUDE_PHASED_UPDATES=0
+    assert_equal 'APT::Get::Always-Include-Phased-Updates=false' "$(apt_phased_option)" || return 1
+    output="$(update_apt 2>&1)" || return 1
+    assert_contains "$output" 'Always-Include-Phased-Updates=false' || return 1
+    assert_not_contains "$output" 'Always-Include-Phased-Updates=true' || return 1
+
+    INCLUDE_PHASED_UPDATES=1
+    assert_equal 'APT::Get::Always-Include-Phased-Updates=true' "$(apt_phased_option)" || return 1
+    output="$(update_apt 2>&1)" || return 1
+    assert_contains "$output" 'Always-Include-Phased-Updates=true' || return 1
+    INCLUDE_PHASED_UPDATES=0
+}
+
+test_apt_kept_back_packages_are_parsed_and_reported() {
+    local output parsed
+    mock_trusted_commands
+    DRY_RUN=1; DO_CLEANUP=0; INCLUDE_PHASED_UPDATES=0; HELD_BACK=()
+
+    # A realistic `apt-get -s upgrade` transcript, including the multi-package
+    # continuation line and the unrelated block that follows it.
+    run_system_command() {
+        cat <<'SIMULATION'
+NOTE: This is only a simulation!
+Reading package lists...
+The following packages have been kept back:
+  firefox libwebkit2gtk-4.1-0
+  python3-troublesome
+The following packages will be upgraded:
+  curl
+1 upgraded, 0 newly installed, 0 to remove and 3 not upgraded.
+SIMULATION
+    }
+
+    parsed="$(apt_kept_back_packages)"
+    assert_equal 'firefox
+libwebkit2gtk-4.1-0
+python3-troublesome' "$parsed" || return 1
+
+    # Recorded outside a command substitution, so that the array the function
+    # appends to is the one this test inspects.
+    output="$(record_apt_kept_back_packages 2>&1 >/dev/null)"
+    HELD_BACK=(); record_apt_kept_back_packages 2>/dev/null
+    assert_equal 3 "${#HELD_BACK[@]}" || return 1
+    assert_contains "${HELD_BACK[0]}" 'firefox' || return 1
+    assert_contains "${HELD_BACK[0]}" 'phased rollout' || return 1
+    assert_contains "$output" 'Holding back "python3-troublesome"' || return 1
+    # A package listed as upgradable must never be reported as held back.
+    assert_not_contains "${HELD_BACK[*]}" 'curl'
+}
+
+test_held_back_packages_appear_in_the_summary_without_failing() {
+    local output
+    DISTRO_NAME='Test Linux'; SYSTEM_MANAGER=apt
+    SUCCEEDED=('System packages (apt)'); FAILED=(); SKIPPED=(); PLANNED=()
+    HELD_BACK=('APT package: firefox (phased rollout)')
+    reboot_is_required() { return 1; }
+    output="$(print_summary 2>&1)"
+    assert_contains "$output" 'Held back:' || return 1
+    assert_contains "$output" 'firefox' || return 1
+    assert_not_contains "$output" 'Failed:'
+}
+
+test_reboot_detection_uses_needs_restarting() {
+    local output
+    DISTRO_NAME='Test Linux'; SYSTEM_MANAGER=dnf
+    SUCCEEDED=(); FAILED=(); SKIPPED=(); PLANNED=(); HELD_BACK=()
+
+    reboot_marker_exists() { return 1; }
+    have_system_command() { [[ "$1" == needs-restarting ]]; }
+    run_system_command() { return 1; }
+    reboot_is_required || return 1
+    output="$(print_summary 2>&1)"
+    assert_contains "$output" 'A system reboot is required' || return 1
+
+    # The Debian and Ubuntu marker file is enough on its own.
+    reboot_marker_exists() { return 0; }
+    have_system_command() { return 1; }
+    reboot_is_required || return 1
+    reboot_marker_exists() { return 1; }
+    have_system_command() { [[ "$1" == needs-restarting ]]; }
+
+    # Exit status 0 from needs-restarting means no reboot is needed, and any
+    # other status is an error that must not be reported as a reboot.
+    run_system_command() { return 0; }
+    reboot_is_required && return 1
+    run_system_command() { return 127; }
+    reboot_is_required && return 1
+    return 0
+}
+
+test_additional_managers_are_accounted_for_when_absent() {
+    local output status
+    uname() { printf 'Linux\n'; }
+    is_root() { return 1; }
+    have_command() { return 1; }
+    have_system_command() { return 1; }
+    load_os_release() { DISTRO_NAME='Test Linux'; }
+    select_privilege_tool() { PRIVILEGE_TOOL=/usr/bin/sudo; }
+    validate_privileges() { return 0; }
+    detect_system_manager() { SYSTEM_MANAGER=apt; return 0; }
+    # Invoked indirectly through main/run_task.
+    # shellcheck disable=SC2317
+    update_system_packages() { return 0; }
+    reboot_is_required() { return 1; }
+
+    FAILED=(); SUCCEEDED=(); SKIPPED=(); PLANNED=(); HELD_BACK=(); DRY_RUN=0
+    output="$(main 2>&1)"; status=$?
+    assert_status 0 "$status" || return 1
+    assert_contains "$output" '- Snap' || return 1
+    assert_contains "$output" '- Flatpak' || return 1
+    assert_contains "$output" '- Homebrew' || return 1
+
+    FAILED=(); SUCCEEDED=(); SKIPPED=(); PLANNED=(); HELD_BACK=()
+    output="$(main --system-only 2>&1)"; status=$?
+    assert_status 0 "$status" || return 1
+    assert_contains "$output" '--system-only' || return 1
+    assert_not_contains "$output" '- Snap'
 }
 
 test_no_cleanup_disables_homebrew_automatic_cleanup() {
@@ -243,11 +380,19 @@ test_exit_codes_zero_and_one() {
 test_restart_and_quoted_dry_run_output() {
     local output
     DISTRO_NAME='Test Linux'; SYSTEM_MANAGER=rpm-ostree
-    SUCCEEDED=(); FAILED=(); SKIPPED=(); PLANNED=()
+    SUCCEEDED=(); FAILED=(); SKIPPED=(); PLANNED=(); HELD_BACK=()
+    reboot_is_required() { return 1; }
     output="$(print_summary 2>&1)"
-    if [[ "$output" != *'Reboot to activate'* && "$output" != *'A system reboot is required'* ]]; then
-        fail 'expected a reboot notice for rpm-ostree' || return 1
-    fi
+    assert_contains "$output" 'Reboot to activate' || return 1
+
+    SYSTEM_MANAGER=apt
+    output="$(print_summary 2>&1)"
+    assert_not_contains "$output" 'Reboot to activate' || return 1
+    assert_not_contains "$output" 'A system reboot is required' || return 1
+
+    reboot_is_required() { return 0; }
+    output="$(print_summary 2>&1)"
+    assert_contains "$output" 'A system reboot is required' || return 1
 
     output="$(print_command '/tmp/a path/tool' 'label;with punctuation' 2>&1)"
     assert_contains "$output" '/tmp/a\ path/tool' || return 1
@@ -262,6 +407,11 @@ run_test 'immutable-system precedence' test_immutable_system_precedence
 run_test 'all native manager dispatch paths' test_all_native_manager_dispatch_paths
 run_test 'sudo and doas selection' test_privilege_tool_selection
 run_test 'APT cleanup toggle and non-removing upgrade' test_apt_cleanup_and_safe_upgrade
+run_test 'phased APT updates are held back unless requested' test_phased_updates_are_held_back_by_default
+run_test 'APT kept-back packages are parsed and reported' test_apt_kept_back_packages_are_parsed_and_reported
+run_test 'held-back packages are summarised without failing the run' test_held_back_packages_appear_in_the_summary_without_failing
+run_test 'reboot detection honours needs-restarting exit codes' test_reboot_detection_uses_needs_restarting
+run_test 'absent additional managers are recorded as skipped' test_additional_managers_are_accounted_for_when_absent
 run_test 'no-cleanup also disables Homebrew automatic cleanup' test_no_cleanup_disables_homebrew_automatic_cleanup
 run_test 'Flatpak inventory errors preserve other-scope execution' test_flatpak_inventory_failure_is_reported_but_other_scope_continues
 run_test 'updater failure isolation and accounting' test_failure_isolation_and_accounting

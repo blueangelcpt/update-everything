@@ -5,8 +5,18 @@ on:
     branches: [main]
   pull_request:
 
+# No job needs write access: nothing is published, committed, or commented on.
 permissions:
   contents: read
+
+# A newer push to the same branch makes the previous run redundant.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
 
 jobs:
   linux:
@@ -16,12 +26,13 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Validate Bash syntax
         run: bash -n linux/update-everything.sh macos/update-everything.sh tests/run-shell-tests.sh tests/shell/*.sh
 
       - name: Install pinned ShellCheck
-        shell: bash
         run: |
           curl --fail --location --silent --show-error \
             --output "$RUNNER_TEMP/shellcheck.tar.xz" \
@@ -36,6 +47,9 @@ jobs:
       - name: Run shell tests
         run: tests/run-shell-tests.sh
 
+      - name: Check that the embedded versions agree
+        run: tests/check-versions.sh
+
   macos:
     name: macOS Bash 3.2 compatibility
     runs-on: macos-15
@@ -43,14 +57,18 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Verify Apple Bash and syntax
-        shell: bash
         run: |
           /bin/bash --version | head -n 1
           /bin/bash --version | head -n 1 | grep 'version 3\.2'
-          /bin/bash -n macos/update-everything.sh tests/run-shell-tests.sh tests/shell/*.sh
+          /bin/bash -n macos/update-everything.sh linux/update-everything.sh \
+            tests/run-shell-tests.sh tests/shell/*.sh
 
+      # Launching the runner with /bin/bash makes every suite run under Bash
+      # 3.2; the runner propagates its own interpreter to the suites it starts.
       - name: Run shell tests with Apple Bash
         run: /bin/bash tests/run-shell-tests.sh
 
@@ -61,6 +79,8 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Validate PowerShell parser
         shell: powershell
@@ -76,6 +96,7 @@ jobs:
             $errors | Format-List | Out-String | Write-Error
             exit 1
           }
+          Write-Host "Parsed with PowerShell $($PSVersionTable.PSVersion)."
 
       - name: Install pinned PowerShell test tools
         shell: powershell
@@ -98,4 +119,10 @@ jobs:
         shell: powershell
         run: |
           Import-Module Pester -RequiredVersion 5.7.1 -Force
-          Invoke-Pester -Path .\tests\windows -CI
+          $result = Invoke-Pester -Path .\tests\windows -CI -PassThru
+          if ($result.FailedCount -gt 0) { exit 1 }
+          if ($result.PassedCount -eq 0) {
+            Write-Error 'No Pester test ran; the suite would have passed vacuously.'
+            exit 1
+          }
+          Write-Host "$($result.PassedCount) passed, $($result.SkippedCount) skipped."

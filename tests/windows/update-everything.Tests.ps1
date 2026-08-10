@@ -28,6 +28,7 @@ Describe 'update-everything Windows updater' {
         $PatchMyPCPath = $null
         $DryRun = $false
         $ShowVersion = $false
+        $UnrecognisedArguments = @()
         $script:Succeeded = @()
         $script:Failed = @()
         $script:Skipped = @()
@@ -123,16 +124,38 @@ Describe 'update-everything Windows updater' {
         $script:RebootRequired | Should -BeTrue
     }
 
-    It 'treats Chocolatey no-updates exit code 2 as success' {
-        Mock Invoke-External { $script:LastExternalExitCode = 2 }
-        { Update-ChocolateyPackage -Path 'C:\Chocolatey\choco.exe' } | Should -Not -Throw
-        $script:RebootRequired | Should -BeFalse
+    It 'accepts only the exit codes Chocolatey documents as valid' {
+        $accepted = $null
+        Mock Invoke-External {
+            param($FilePath, $Arguments, $SuccessExitCodes)
+            $script:AcceptedExitCodes = $SuccessExitCodes
+            $script:LastExternalExitCode = 0
+        }
+        Update-ChocolateyPackage -Path 'C:\Chocolatey\choco.exe'
+        $accepted = $script:AcceptedExitCodes
+        # 0, 1605, 1614, 1641 and 3010 are documented as valid; 350 and 1604 are
+        # accepted only so the reboot can be reported before the task fails.
+        $accepted | Should -Contain 0
+        $accepted | Should -Contain 1605
+        $accepted | Should -Contain 1614
+        $accepted | Should -Contain 1641
+        $accepted | Should -Contain 3010
+        # Exit code 2 is not a documented Chocolatey success code and must not
+        # be silently swallowed.
+        $accepted | Should -Not -Contain 2
     }
 
     It 'reports Chocolatey pending-reboot code 350 as a failure requiring reboot' {
         Mock Invoke-External { $script:LastExternalExitCode = 350 }
         { Update-ChocolateyPackage -Path 'C:\Chocolatey\choco.exe' } |
             Should -Throw '*pending*'
+        $script:RebootRequired | Should -BeTrue
+    }
+
+    It 'reports Chocolatey partial-run code 1604 as a failure requiring reboot' {
+        Mock Invoke-External { $script:LastExternalExitCode = 1604 }
+        { Update-ChocolateyPackage -Path 'C:\Chocolatey\choco.exe' } |
+            Should -Throw '*part-way*'
         $script:RebootRequired | Should -BeTrue
     }
 
@@ -282,6 +305,44 @@ Describe 'update-everything Windows updater' {
         ($script:Skipped -join "`n") | Should -Match 'Scoop.*must be updated.*not elevated'
     }
 
+    It 'skips the Microsoft Store scan in a session that is not elevated' {
+        Mock Get-WinGetPath { $null }
+        Mock Get-ChocolateyPath { $null }
+        Mock Get-CommandPath { $null }
+        Mock Get-PatchMyPCPath { $null }
+        Mock Get-CimClass { [pscustomobject]@{ CimClassName = 'MDM_EnterpriseModernAppManagement_AppManagement01' } }
+        Mock Update-MicrosoftStoreApplication { throw 'the scan must not be attempted' }
+        Invoke-ApplicationUpdate -IsElevated $false
+        ($script:Skipped -join "`n") | Should -Match 'Microsoft Store.*elevated'
+        $script:Failed.Count | Should -Be 0
+        Should -Invoke Update-MicrosoftStoreApplication -Times 0 -Exactly
+    }
+
+    It 'runs the Microsoft Store scan in an elevated session' {
+        Mock Get-WinGetPath { $null }
+        Mock Get-ChocolateyPath { $null }
+        Mock Get-CommandPath { $null }
+        Mock Get-PatchMyPCPath { $null }
+        Mock Get-CimClass { [pscustomobject]@{ CimClassName = 'MDM_EnterpriseModernAppManagement_AppManagement01' } }
+        Mock Update-MicrosoftStoreApplication {}
+        Invoke-ApplicationUpdate -IsElevated $true
+        Should -Invoke Update-MicrosoftStoreApplication -Times 1 -Exactly
+        $script:Succeeded | Should -Contain 'Microsoft Store update scan'
+    }
+
+    It 'records Windows Update as failed when the session is not elevated' {
+        Mock Invoke-Task { throw 'Windows Update must not be attempted' }
+        Invoke-SystemUpdate -IsElevated $false
+        ($script:Failed -join "`n") | Should -Match 'Windows Update.*administrator'
+        Should -Invoke Invoke-Task -Times 0 -Exactly
+    }
+
+    It 'reports an unrecognised option with exit code 2' {
+        $UnrecognisedArguments = @('-DefinitelyInvalid')
+        Invoke-Main
+        $script:ExitCode | Should -Be 2
+    }
+
     It 'continues to Microsoft Store detection after Patch My PC discovery fails' {
         Mock Get-WinGetPath { $null }
         Mock Get-ChocolateyPath { $null }
@@ -323,8 +384,8 @@ Describe 'PowerShell command-line parsing' {
         $LASTEXITCODE | Should -Be 2
     }
 
-    It 'rejects an unknown option before running updates' -Skip:(-not $script:IsWindowsHost) {
+    It 'rejects an unknown option with exit code 2' -Skip:(-not $script:IsWindowsHost) {
         & powershell.exe -NoLogo -NoProfile -File $script:UpdaterPath -DefinitelyInvalid
-        $LASTEXITCODE | Should -Not -Be 0
+        $LASTEXITCODE | Should -Be 2
     }
 }

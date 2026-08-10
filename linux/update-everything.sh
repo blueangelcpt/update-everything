@@ -25,6 +25,7 @@ readonly SYSTEM_COMMAND_PATH="/run/current-system/sw/bin:/usr/sbin:/usr/bin:/sbi
 
 DO_CLEANUP=1
 DO_ADDITIONAL_MANAGERS=1
+INCLUDE_PHASED_UPDATES=0
 DRY_RUN=0
 
 SYSTEM_MANAGER=""
@@ -37,6 +38,7 @@ PRIVILEGE_TOOL=""
 SUCCEEDED=()
 FAILED=()
 SKIPPED=()
+HELD_BACK=()
 PLANNED=()
 
 usage() {
@@ -47,11 +49,15 @@ Update all available packages managed by the Linux distribution's native
 package manager, followed by supported cross-distribution managers.
 
 Options:
-  --system-only   Update only the native system package manager.
-  --no-cleanup    Do not remove unused dependencies or cached packages.
-  --dry-run       Detect managers and print mutating commands without running them.
-  -h, --help      Show this help text.
-  -v, --version   Show the script version.
+  --system-only            Update only the native system package manager.
+  --no-cleanup             Do not remove unused dependencies or cached packages.
+  --include-phased-updates Install APT updates that are still being phased in.
+                           Phasing is a distribution safety mechanism, so these
+                           are held back and reported by default.
+  --dry-run                Detect managers and print mutating commands without
+                           running them.
+  -h, --help               Show this help text.
+  -v, --version            Show the script version.
 
 Run this script as your normal user. It will request elevated privileges only
 for commands that require them.
@@ -84,6 +90,17 @@ find_system_command() {
 
 have_system_command() {
     find_system_command "$1" >/dev/null
+}
+
+# Run a read-only system command from a trusted location, without elevation.
+run_system_command() {
+    local command_path
+    command_path="$(find_system_command "$1")"
+    if [[ -z "$command_path" ]]; then
+        return 127
+    fi
+    shift
+    "$command_path" "$@"
 }
 
 is_root() {
@@ -313,10 +330,61 @@ detect_system_manager() {
     return 1
 }
 
+apt_phased_option() {
+    if (( INCLUDE_PHASED_UPDATES )); then
+        printf 'APT::Get::Always-Include-Phased-Updates=true'
+    else
+        printf 'APT::Get::Always-Include-Phased-Updates=false'
+    fi
+}
+
+# List the packages APT will refuse to upgrade, most often because Ubuntu is
+# still phasing them in. `-s` is a simulation and needs no privileges, so this
+# neither changes the system nor triggers a second authentication prompt.
+apt_kept_back_packages() {
+    LC_ALL=C run_system_command apt-get -s \
+        -o "$(apt_phased_option)" upgrade --with-new-pkgs 2>/dev/null |
+    awk '
+        /^The following packages have been kept back:/ { collecting = 1; next }
+        collecting {
+            if ($0 ~ /^[[:space:]]/) {
+                for (field = 1; field <= NF; field++) { print $field }
+                next
+            }
+            collecting = 0
+        }
+    '
+}
+
+record_apt_kept_back_packages() {
+    local package reason
+    local kept_back=""
+
+    kept_back="$(apt_kept_back_packages)"
+    [[ -n "$kept_back" ]] || return 0
+
+    if (( INCLUDE_PHASED_UPDATES )); then
+        reason="APT kept it back; a phased rollout is not the cause because --include-phased-updates was given"
+    else
+        reason="APT kept it back, which is usually a phased rollout; --include-phased-updates installs it anyway"
+    fi
+
+    while IFS= read -r package; do
+        [[ -n "$package" ]] || continue
+        warn "Holding back \"$package\": $reason."
+        HELD_BACK+=("APT package: $package ($reason)")
+    done <<EOF
+$kept_back
+EOF
+}
+
 update_apt() {
-    as_root apt-get update &&
+    as_root apt-get update || return 1
+
+    record_apt_kept_back_packages
+
     as_root env PATH="$SYSTEM_COMMAND_PATH" DEBIAN_FRONTEND=noninteractive apt-get \
-        -o APT::Get::Always-Include-Phased-Updates=true \
+        -o "$(apt_phased_option)" \
         upgrade --with-new-pkgs -y || return 1
 
     if (( DO_CLEANUP )); then
@@ -501,6 +569,29 @@ update_homebrew() {
     fi
 }
 
+# Report a pending reboot without ever performing one. The marker file is the
+# Debian and Ubuntu convention; `needs-restarting -r` is the DNF and YUM
+# equivalent and exits 1 exactly when a reboot is required.
+reboot_marker_exists() {
+    [[ -f /var/run/reboot-required || -f /run/reboot-required ]]
+}
+
+reboot_is_required() {
+    if reboot_marker_exists; then
+        return 0
+    fi
+
+    if have_system_command needs-restarting; then
+        local status=0
+        run_system_command needs-restarting -r >/dev/null 2>&1 || status=$?
+        if (( status == 1 )); then
+            return 0
+        fi
+    fi
+
+    return 1
+}
+
 print_summary() {
     local item
 
@@ -521,6 +612,13 @@ print_summary() {
         done
     fi
 
+    if ((${#HELD_BACK[@]})); then
+        printf '\nHeld back:\n'
+        for item in "${HELD_BACK[@]}"; do
+            printf '  - %s\n' "$item"
+        done
+    fi
+
     if ((${#SKIPPED[@]})); then
         printf '\nNot installed or skipped:\n'
         for item in "${SKIPPED[@]}"; do
@@ -535,7 +633,7 @@ print_summary() {
         done
     fi
 
-    if [[ -f /var/run/reboot-required ]]; then
+    if reboot_is_required; then
         printf '\n[NOTICE] A system reboot is required.\n'
     elif [[ "$SYSTEM_MANAGER" == "rpm-ostree" || "$SYSTEM_MANAGER" == "transactional-update" ]]; then
         printf '\n[NOTICE] Reboot to activate any staged system update.\n'
@@ -550,6 +648,9 @@ main() {
                 ;;
             --no-cleanup)
                 DO_CLEANUP=0
+                ;;
+            --include-phased-updates)
+                INCLUDE_PHASED_UPDATES=1
                 ;;
             --dry-run)
                 DRY_RUN=1

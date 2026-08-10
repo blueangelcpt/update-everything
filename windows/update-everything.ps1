@@ -76,7 +76,11 @@ param(
     [string]$PatchMyPCPath,
     [switch]$DryRun,
     [Alias('Version')]
-    [switch]$ShowVersion
+    [switch]$ShowVersion,
+    # Collected so that an unrecognised option is reported by this script with
+    # exit code 2, rather than as a PowerShell parameter binding error.
+    [Parameter(ValueFromRemainingArguments = $true)]
+    [string[]]$UnrecognisedArguments
 )
 
 Set-StrictMode -Version 3.0
@@ -576,15 +580,25 @@ function Update-WinGetPackage {
 function Update-ChocolateyPackage {
     param([Parameter(Mandatory = $true)][string]$Path)
 
+    # Chocolatey documents 0, 1605, 1614, 1641 and 3010 as its valid exit codes.
     # 1641 and 3010 mean a package installed successfully and wants a reboot.
+    # 350 and 1604 are the reboot-detection codes; they are accepted here only
+    # so that the reboot can be reported before the task is failed below. Any
+    # other code, including 2, is a genuine failure and must not be swallowed.
     Invoke-External -FilePath $Path `
         -Arguments @('upgrade', 'all', '--yes', '--no-progress', '--use-package-exit-codes') `
-        -SuccessExitCodes @(0, 2, 1605, 1614, 1641, 3010, 350)
+        -SuccessExitCodes @(0, 1605, 1614, 1641, 3010, 350, 1604)
 
     if ($script:LastExternalExitCode -in @(1641, 3010)) { $script:RebootRequired = $true }
+
     if ($script:LastExternalExitCode -eq 350) {
         $script:RebootRequired = $true
         throw 'Chocolatey did not run because a reboot is already pending.'
+    }
+
+    if ($script:LastExternalExitCode -eq 1604) {
+        $script:RebootRequired = $true
+        throw 'Chocolatey stopped part-way through because a package requested a reboot.'
     }
 }
 
@@ -792,14 +806,25 @@ function Invoke-ApplicationUpdate {
     $storeClass = Get-CimClass -Namespace 'Root\cimv2\mdm\dmmap' `
         -ClassName 'MDM_EnterpriseModernAppManagement_AppManagement01' -ErrorAction SilentlyContinue
 
-    if ($storeClass) {
-        Invoke-Task -Label 'Microsoft Store update scan' -Action { Update-MicrosoftStoreApplication }
-    } else {
+    if (-not $storeClass) {
         Add-SkippedItem -Label 'Microsoft Store' -Reason 'the application management class is not available'
+    } elseif (-not $IsElevated -and -not $DryRun) {
+        # The MDM bridge provider only answers an administrator, so calling it
+        # from a normal session fails with access denied rather than scanning.
+        Add-SkippedItem -Label 'Microsoft Store' -Reason 'the update scan requires an elevated PowerShell session'
+    } else {
+        Invoke-Task -Label 'Microsoft Store update scan' -Action { Update-MicrosoftStoreApplication }
     }
 }
 
 function Invoke-Main {
+    if ($UnrecognisedArguments) {
+        Write-Fail "Unknown option: $($UnrecognisedArguments -join ' ')"
+        Write-Host "Run 'Get-Help $ScriptName -Detailed' for the supported options."
+        $script:ExitCode = 2
+        return
+    }
+
     if ($ShowVersion) {
         Write-Host "$ScriptName $ScriptVersion"
         return

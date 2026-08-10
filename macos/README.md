@@ -120,7 +120,11 @@ Examples:
   `softwareupdate --list`, but never elevates or invokes an install, upgrade,
   cleanup, channel update, or EULA acceptance operation.
 - Automated tests exercise parsing, punctuation in labels, failure isolation,
-  restart state, and the OCLP/major-upgrade matrix. No claim is made that every
-  path has been live-tested on Intel, Apple silicon, or OCLP-patched hardware.
+  restart state, and the OCLP/major-upgrade matrix, all through fixtures and
+  replaced shell functions. `softwareupdate` is never invoked by a test.
+- No part of this script has been live-tested on Intel, Apple silicon, or
+  OCLP-patched hardware as part of its release process. CI runs the suite under
+  Apple's Bash 3.2 on a macOS runner, which verifies interpreter compatibility
+  and script logic, not real update behavior.
 
 See the [repository README](../README.md) for the full description, including what the script deliberately does not do.
