@@ -25,6 +25,7 @@ readonly SYSTEM_COMMAND_PATH="/run/current-system/sw/bin:/usr/sbin:/usr/bin:/sbi
 
 DO_CLEANUP=1
 DO_ADDITIONAL_MANAGERS=1
+DO_SYSTEM_UPDATE=1
 INCLUDE_PHASED_UPDATES=0
 DRY_RUN=0
 
@@ -34,6 +35,11 @@ OS_ID=""
 OS_ID_LIKE=""
 
 PRIVILEGE_TOOL=""
+
+# The task that run_task is executing, and the signal that stopped the run, so
+# that an interrupted run can still say what had finished.
+CURRENT_TASK=""
+INTERRUPTED_BY=""
 
 SUCCEEDED=()
 FAILED=()
@@ -50,6 +56,9 @@ package manager, followed by supported cross-distribution managers.
 
 Options:
   --system-only            Update only the native system package manager.
+  --skip-system-update     Update only Snap, Flatpak, and Homebrew. Snap and
+                           system Flatpak still ask for sudo or doas when
+                           they reach a step that needs it.
   --no-cleanup             Do not remove unused dependencies or cached packages.
   --include-phased-updates Install APT updates that are still being phased in.
                            Phasing is a distribution safety mechanism, so these
@@ -61,6 +70,9 @@ Options:
 
 Run this script as your normal user. It will request elevated privileges only
 for commands that require them.
+
+Exit status: 0 success, 1 an updater failed, 2 invalid or conflicting options
+or an unsupported system, 130 or 143 interrupted by SIGINT or SIGTERM.
 USAGE
 }
 
@@ -226,6 +238,7 @@ run_task() {
     shift
 
     section "$label"
+    CURRENT_TASK="$label"
 
     if "$@"; then
         if (( DRY_RUN )); then
@@ -240,6 +253,7 @@ run_task() {
         FAILED+=("$label (exit $status)")
         error "$label failed with exit status $status. Continuing with the remaining managers."
     fi
+    CURRENT_TASK=""
 
     # A failed manager should not prevent unrelated managers from being tried.
     return 0
@@ -633,6 +647,14 @@ print_summary() {
         done
     fi
 
+    if [[ -n "$INTERRUPTED_BY" ]]; then
+        printf '\nInterrupted by %s:\n' "$INTERRUPTED_BY" >&2
+        if [[ -n "$CURRENT_TASK" ]]; then
+            printf '  - %s (stopped while running; it may be partly applied)\n' "$CURRENT_TASK" >&2
+        fi
+        printf '  - Any manager that had not started yet was not run.\n' >&2
+    fi
+
     if reboot_is_required; then
         printf '\n[NOTICE] A system reboot is required.\n'
     elif [[ "$SYSTEM_MANAGER" == "rpm-ostree" || "$SYSTEM_MANAGER" == "transactional-update" ]]; then
@@ -640,11 +662,32 @@ print_summary() {
     fi
 }
 
+# Run from the INT and TERM traps. Bash runs a trap only once the foreground
+# command has exited, so by now the interrupted updater has stopped. The
+# handler only reports: it restores the default dispositions first, so that a
+# second Ctrl-C ends the script at once, and it never returns to main, so no
+# further updater can start.
+handle_interrupt() {
+    local signal="$1"
+    local status="$2"
+
+    trap - INT TERM
+    INTERRUPTED_BY="SIG$signal"
+    printf '\n' >&2
+    warn "Received SIG$signal. No further updates will be started."
+    print_summary
+    error "Updates were interrupted before they finished."
+    exit "$status"
+}
+
 main() {
     while (($#)); do
         case "$1" in
             --system-only)
                 DO_ADDITIONAL_MANAGERS=0
+                ;;
+            --skip-system-update)
+                DO_SYSTEM_UPDATE=0
                 ;;
             --no-cleanup)
                 DO_CLEANUP=0
@@ -672,6 +715,11 @@ main() {
         shift
     done
 
+    if (( ! DO_ADDITIONAL_MANAGERS && ! DO_SYSTEM_UPDATE )); then
+        error "--system-only and --skip-system-update cannot be used together."
+        return 2
+    fi
+
     if [[ "$(uname -s)" != "Linux" ]]; then
         error "This script supports Linux only."
         return 2
@@ -682,13 +730,21 @@ main() {
         return 2
     fi
 
+    trap 'handle_interrupt INT 130' INT
+    trap 'handle_interrupt TERM 143' TERM
+
     load_os_release
     select_privilege_tool
 
     printf '%s %s\n' "$SCRIPT_NAME" "$SCRIPT_VERSION"
     info "Detected distribution: $DISTRO_NAME"
 
-    if detect_system_manager; then
+    if (( ! DO_SYSTEM_UPDATE )); then
+        # Nothing is validated up front: Flatpak user installations and
+        # Homebrew need no privileges, and as_root lets sudo or doas prompt
+        # on demand for Snap and system Flatpak.
+        SKIPPED+=("System packages (--skip-system-update)")
+    elif detect_system_manager; then
         info "Detected native system manager: $SYSTEM_MANAGER"
 
         if validate_privileges; then
@@ -723,6 +779,8 @@ main() {
         SKIPPED+=("Additional package managers (--system-only)")
     fi
 
+    # From here on there is nothing left to interrupt but the summary itself.
+    trap - INT TERM
     print_summary
 
     if ((${#FAILED[@]})); then

@@ -108,6 +108,14 @@ Examples:
 | `0` | Every detected update operation completed successfully |
 | `1` | At least one detected update operation failed |
 | `2` | Invalid usage, or the script was started on a system other than macOS |
+| `130` | Interrupted by `SIGINT` (Ctrl-C) |
+| `143` | Interrupted by `SIGTERM` |
+
+On `SIGINT` or `SIGTERM` the script starts no further manager, prints the
+summary of what had completed, failed, or been held back, names the manager
+that was interrupted, and exits `130` or `143`. Because Bash waits for the
+running command before handling a signal, a `SIGTERM` sent to the script alone
+lets the current command, such as a `softwareupdate` install, finish first.
 
 ## Notes
 

@@ -49,6 +49,20 @@ Describe 'update-everything Windows updater' {
         $script:ExitCode | Should -Be 2
     }
 
+    It 'accepts -SkipSystemUpdate as an alias of -SkipWindowsUpdate' {
+        $parameter = (Get-Command -Name $script:UpdaterPath).Parameters['SkipWindowsUpdate']
+        $parameter.Aliases | Should -Contain 'SkipSystemUpdate'
+        $parameter.ParameterType | Should -Be ([switch])
+    }
+
+    It 'names the alias in the conflicting-mode error' {
+        $SystemOnly = $true
+        $SkipWindowsUpdate = $true
+        $output = Invoke-Main 6>&1 | Out-String
+        $output | Should -Match '-SkipSystemUpdate'
+        $script:ExitCode | Should -Be 2
+    }
+
     It 'isolates one updater failure from the next task' {
         Invoke-Task -Label 'broken' -Action { throw 'test failure' }
         Invoke-Task -Label 'working' -Action { return }
@@ -381,6 +395,11 @@ Describe 'PowerShell command-line parsing' {
 
     It 'returns 2 for conflicting options' -Skip:(-not $script:IsWindowsHost) {
         & powershell.exe -NoLogo -NoProfile -File $script:UpdaterPath -SystemOnly -SkipWindowsUpdate
+        $LASTEXITCODE | Should -Be 2
+    }
+
+    It 'returns 2 for conflicting options given through the alias' -Skip:(-not $script:IsWindowsHost) {
+        & powershell.exe -NoLogo -NoProfile -File $script:UpdaterPath -SystemOnly -SkipSystemUpdate
         $LASTEXITCODE | Should -Be 2
     }
 

@@ -186,6 +186,50 @@ test_held_back_summary_and_failure_isolation() {
     assert_contains "$output" 'future release'
 }
 
+expect_interrupted_run() {
+    local signal="$1" expected_status="$2"
+    local output status
+    INTERRUPT_SIGNAL="$signal"
+    run_system_command() { printf 'Darwin\n'; }
+    is_root() { return 1; }
+    load_system_information() {
+        MACOS_NAME=macOS; MACOS_VERSION=15.7; MACOS_MAJOR=15
+        HARDWARE_MODEL='Test Mac'; ARCHITECTURE=arm64
+    }
+    select_privilege_tool() { PRIVILEGE_TOOL=/usr/bin/sudo; }
+    detect_oclp() { return 1; }
+    validate_privileges() { return 0; }
+    # Invoked indirectly through main/run_task.
+    # shellcheck disable=SC2317
+    update_macos() { return 0; }
+    have_command() { [[ "$1" == brew || "$1" == port ]]; }
+    # shellcheck disable=SC2317
+    update_homebrew() { signal_current_shell "$INTERRUPT_SIGNAL"; printf 'HOMEBREW-CONTINUED\n'; }
+    # shellcheck disable=SC2317
+    update_macports() { printf 'MACPORTS-STARTED\n'; }
+    MAX_MACOS_MAJOR=25; OCLP_DETECTED=0; RESTART_REQUIRED=0; DRY_RUN=0
+    SUCCEEDED=(); FAILED=(); SKIPPED=(); HELD_BACK=(); PLANNED=()
+
+    output="$(main 2>&1)"; status=$?
+    assert_status "$expected_status" "$status" || return 1
+    assert_contains "$output" "Received SIG$signal" || return 1
+    assert_contains "$output" '==> Summary' || return 1
+    assert_contains "$output" '- macOS updates' || return 1
+    assert_contains "$output" "Interrupted by SIG$signal:" || return 1
+    assert_contains "$output" '- Homebrew formulae and casks (stopped while running' || return 1
+    assert_not_contains "$output" 'HOMEBREW-CONTINUED' || return 1
+    assert_not_contains "$output" 'MACPORTS-STARTED' || return 1
+    assert_not_contains "$output" 'All detected package managers completed'
+}
+
+test_sigint_prints_summary_and_exits_130() {
+    expect_interrupted_run INT 130
+}
+
+test_sigterm_prints_summary_and_exits_143() {
+    expect_interrupted_run TERM 143
+}
+
 run_test 'help, version, invalid and conflicting options' test_help_version_and_invalid_options
 run_test 'supported platform and root guards' test_platform_and_root_guards
 run_test 'complete macOS/OCLP release decision matrix' test_release_decision_matrix
@@ -196,5 +240,7 @@ run_test 'successful macOS update sets restart and OCLP notice' test_successful_
 run_test 'dry run makes no installed/restart claims' test_dry_run_never_marks_update_installed
 run_test 'malformed softwareupdate output fails closed' test_malformed_softwareupdate_output_fails_closed
 run_test 'held-back summary and manager failure isolation' test_held_back_summary_and_failure_isolation
+run_test 'SIGINT prints the summary and exits 130' test_sigint_prints_summary_and_exits_130
+run_test 'SIGTERM prints the summary and exits 143' test_sigterm_prints_summary_and_exits_143
 
 finish_tests
