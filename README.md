@@ -521,19 +521,41 @@ Most of the Windows suite also runs on PowerShell 7 on Linux or macOS, which is
 useful while developing; the four tests that launch `powershell.exe` are skipped
 off Windows and only CI's Windows job covers them.
 
+With Docker installed, run the Linux script's dry run in a disposable container
+of a real distribution and check the manager it detects. Images without bash
+need a setup command, which runs only inside the container:
+
+```bash
+tests/container-dry-run.sh debian:stable apt
+tests/container-dry-run.sh alpine:latest apk 'apk add --no-cache bash'
+```
+
 CI runs syntax checks, pinned ShellCheck 0.10.0, the shell tests under Linux
-and Apple's Bash 3.2, the Windows PowerShell 5.1 parser, pinned
-PSScriptAnalyzer 1.25.0, and Pester. It never runs a live updater.
+and Apple's Bash 3.2, the Linux dry run in digest-pinned containers of Debian,
+Ubuntu, Fedora, Rocky Linux, openSUSE Tumbleweed, Arch Linux, Alpine, Void
+Linux, and Gentoo, the Windows PowerShell 5.1 parser, pinned PSScriptAnalyzer
+1.25.0, and Pester. It never runs a live updater.
 
 ### Testing limitations
 
-The automated tests use shell functions, mocked commands, fixtures, and dry-run
-paths. No part of this project has been verified against a live update on real
-hardware as part of its release process. In particular, these remain untested
-outside mocks: every distribution-specific package-manager invocation, live
-Windows Update and third-party updater runs, `softwareupdate` behavior on Intel
-and Apple silicon Macs, and any behavior on OCLP-patched hardware. Treat the
-first live run on a new platform as a manual test, and take a backup first.
+The unit tests use shell functions, mocked commands, fixtures, and dry-run
+paths. On top of those, CI runs `linux/update-everything.sh --dry-run` as an
+unprivileged user in real Debian, Ubuntu, Fedora, Rocky Linux, openSUSE
+Tumbleweed, Arch Linux, Alpine, Void Linux, and Gentoo container images. That
+verifies distribution and manager detection against each image's genuine
+`/etc/os-release` and binary locations, and that the dry-run plan is produced
+without error. It does not run a single update command: the containers are
+offline during the dry run, and a container has no kernel, bootloader, or
+services to update. NixOS, rpm-ostree, transactional-update, Solus, Clear
+Linux, Slackware, and Mageia have no container leg, so their detection is
+covered only by mocks.
+
+No part of this project has been verified against a live update on real
+hardware as part of its release process. In particular, these remain untested:
+every distribution-specific package-manager invocation actually being executed,
+live Windows Update and third-party updater runs, `softwareupdate` behavior on
+Intel and Apple silicon Macs, and any behavior on OCLP-patched hardware. Treat
+the first live run on a new platform as a manual test, and take a backup first.
 
 All three scripts are organised the same way: detection is separate from execution, every updater has its own function, and each one is run through a wrapper that records success or failure and lets the remaining updaters continue.
 
@@ -577,6 +599,7 @@ update-everything/
 │   ├── README.md
 │   └── update-everything.ps1
 ├── tests/
+│   ├── container-dry-run.sh
 │   ├── fixtures/macos/softwareupdate-list.txt
 │   ├── run-shell-tests.sh
 │   ├── shell/

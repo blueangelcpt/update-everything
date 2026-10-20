@@ -3,6 +3,19 @@
 All notable changes are documented here. The project uses one repository-wide
 [Semantic Version](https://semver.org/) for Linux, Windows, and macOS.
 
+## [Unreleased]
+
+### Tests and CI
+
+- Run the Linux script's `--dry-run` as an unprivileged user inside
+  digest-pinned containers of Debian stable, Ubuntu 24.04, Fedora, Rocky
+  Linux 9, openSUSE Tumbleweed, Arch Linux, Alpine, Void Linux, and Gentoo.
+  Each leg fails unless the expected native manager is detected from the
+  image's genuine `/etc/os-release` and binary locations and the dry run exits
+  0. The container is disconnected from the network before the script starts,
+  so no leg can perform a live update. The check lives in
+  `tests/container-dry-run.sh` and also runs locally with Docker.
+
 ## [2.0.0] - 2026-08-09
 
 First consolidated cross-platform release containing Linux, Windows, and macOS
@@ -75,4 +88,5 @@ support.
   credentials not persisted, per-job timeouts, and no live operating-system
   updates.
 
+[Unreleased]: https://github.com/blueangelcpt/update-everything/compare/v2.0.0...HEAD
 [2.0.0]: https://github.com/blueangelcpt/update-everything/releases/tag/v2.0.0
