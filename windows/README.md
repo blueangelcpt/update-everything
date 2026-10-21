@@ -13,10 +13,28 @@ stops to ask a question.
 | WinGet | `winget upgrade --all --silent --accept-package-agreements --accept-source-agreements` |
 | Chocolatey | `choco upgrade all --yes --no-progress --use-package-exit-codes` |
 | Scoop | `scoop update` and `scoop update *` |
-| Patch My PC Home Updater | Publisher verification, then `PatchMyPC.exe /s` |
+| Patch My PC Home Updater | Publisher verification, then `PatchMyPC.exe /s`, unless a web browser is open |
 | Microsoft Store | An `UpdateScanMethod` scan through the application management class, in an elevated session only |
 
 An updater that is not installed is reported as skipped, not as a failure. One updater failing does not stop the others.
+
+## Patch My PC and open browsers
+
+Patch My PC's silent mode does not install while a web browser is open: it
+checks every ten seconds and waits for every browser to close. So the script
+first looks for Chrome, Edge, Firefox, Brave, Opera and Vivaldi by process
+name. If any of them has a window open, Patch My PC is not started and is
+listed under "Held back" in the summary. **Close your browsers and run the
+script again**, with `-SkipWindowsUpdate` if Windows Update has already
+finished. A browser running only in the background, such as Edge with startup
+boost, produces a warning instead, and Patch My PC is started.
+
+The script waits for Patch My PC itself, not for applications it updates that
+restart themselves afterwards, and for at most `-PatchMyPCTimeoutMinutes`
+(60 by default). Patch My PC still running after that is left running in the
+background rather than stopped part-way through an install, the step is
+reported as failed, and the remaining updaters continue. A dry run checks for
+open browsers too and says whether Patch My PC would run or be held back.
 
 ## Running it
 
@@ -50,6 +68,7 @@ Run the script again as your normal user to update Scoop packages:
 | `-IncludeDrivers` | Also install driver updates offered by Windows Update. |
 | `-NoCleanup` | Skip Scoop's old-version and download-cache cleanup commands. Other managers retain their own built-in behavior. |
 | `-PatchMyPCPath <path>` | Full path to `PatchMyPC.exe`, for a portable copy the script does not find on its own. |
+| `-PatchMyPCTimeoutMinutes <minutes>` | How long to wait for Patch My PC to finish, from 1 to 1440 minutes. The default is 60. |
 | `-DryRun` | Detect and evaluate updaters without installing, accepting EULAs, or cleaning up. |
 | `-Version` | Print the script version and exit. |
 
@@ -74,7 +93,7 @@ trigger a Microsoft Store scan, or clean caches.
 |---:|---|
 | `0` | Every detected update operation completed successfully |
 | `1` | At least one detected update operation failed |
-| `2` | Conflicting options, or the script was started on a platform other than Windows |
+| `2` | Conflicting or out-of-range options, or the script was started on a platform other than Windows |
 
 | `130`, `143` | Not used on Windows; see below |
 
@@ -95,7 +114,7 @@ reliably. Scroll back through the output to see which updaters had finished.
 | WinGet | `0`, and `0x8A15002B` (`-1978335189`, "no applicable upgrade found") | — | Failure |
 | Chocolatey | `0`, `1605`, `1614`, `1641`, `3010` — the codes Chocolatey documents as valid | `1641`, `3010`, and the reboot-detection codes `350` and `1604` | Failure, including `2` |
 | Scoop | `0` | — | Failure |
-| Patch My PC | `0` | — | Failure |
+| Patch My PC | `0` | — | Failure, and so is still running after `-PatchMyPCTimeoutMinutes` |
 
 `350` means Chocolatey refused to start because a reboot was already pending,
 and `1604` means it stopped part-way through when a package asked for one.

@@ -26,6 +26,7 @@ Describe 'update-everything Windows updater' {
         $IncludeDrivers = $false
         $NoCleanup = $false
         $PatchMyPCPath = $null
+        $PatchMyPCTimeoutMinutes = 60
         $DryRun = $false
         $ShowVersion = $false
         $UnrecognisedArguments = @()
@@ -33,6 +34,7 @@ Describe 'update-everything Windows updater' {
         $script:Failed = @()
         $script:Skipped = @()
         $script:Planned = @()
+        $script:HeldBack = @()
         $script:RebootRequired = $false
         $script:LastExternalExitCode = 0
         $script:ExitCode = 0
@@ -464,6 +466,156 @@ Describe 'update-everything Windows updater' {
             Mock Write-Summary {}
             Invoke-Main
             Should -Invoke Show-Banner -Times 1 -Exactly -ParameterFilter { $Subtitle -eq 'Windows 11 Pro 23H2 - dry run' }
+        }
+    }
+
+    It 'rejects a Patch My PC timeout outside 1 to 1440 minutes with exit code 2' -TestCases @(
+        @{ Minutes = 0 }
+        @{ Minutes = 1441 }
+    ) {
+        param($Minutes)
+        $PatchMyPCTimeoutMinutes = $Minutes
+        $output = Invoke-Main 6>&1 | Out-String
+        $output | Should -Match 'PatchMyPCTimeoutMinutes'
+        $script:ExitCode | Should -Be 2
+    }
+
+    It 'names held-back items in the summary without failing the run' {
+        Mock Test-PendingReboot { $false }
+        $script:HeldBack = @('Patch My PC applications - a web browser is open (chrome)')
+        $output = Write-Summary -OperatingSystem 'Test Windows' 6>&1 | Out-String
+        $output | Should -Match 'Held back:'
+        $output | Should -Match 'a web browser is open \(chrome\)'
+        $script:ExitCode | Should -Be 0
+    }
+
+    Context 'Patch My PC run' {
+        BeforeAll {
+            # A stand-in for the System.Diagnostics.Process that Start-Process
+            # -PassThru returns. WaitForExit records the wait it was given and
+            # reports whether the process exited within it.
+            function New-FakeProcess {
+                param([bool]$Exits = $true, [int]$ExitCode = 0)
+                $process = [pscustomobject]@{
+                    Id = 4242
+                    Handle = [IntPtr]1
+                    ExitCode = $ExitCode
+                    Exits = $Exits
+                    WaitedMilliseconds = $null
+                    Killed = $false
+                }
+                $process | Add-Member -MemberType ScriptMethod -Name WaitForExit -Value {
+                    param($Milliseconds)
+                    $this.WaitedMilliseconds = $Milliseconds
+                    return $this.Exits
+                }
+                $process | Add-Member -MemberType ScriptMethod -Name Kill -Value { $this.Killed = $true }
+                return $process
+            }
+
+            function New-FakeBrowser {
+                param([string]$Name, [bool]$HasWindow)
+                $handle = [IntPtr]::Zero
+                if ($HasWindow) { $handle = [IntPtr]42 }
+                return [pscustomobject]@{ ProcessName = $Name; MainWindowHandle = $handle }
+            }
+        }
+
+        BeforeEach {
+            $script:PatchMyPCExe = 'C:\Program Files\Patch My PC\PatchMyPC.exe'
+            Mock Get-Process { @() }
+            Mock Stop-Process {}
+        }
+
+        It 'waits for Patch My PC alone and records a normal exit as completed' {
+            $script:FakeProcess = New-FakeProcess -ExitCode 0
+            Mock Start-Process { $script:FakeProcess }
+            Invoke-PatchMyPCUpdate -Path $script:PatchMyPCExe
+            $script:Succeeded | Should -Contain 'Patch My PC applications'
+            $script:Failed.Count | Should -Be 0
+            Should -Invoke Start-Process -Times 1 -Exactly -ParameterFilter {
+                -not $Wait -and $PassThru -and $ArgumentList -contains '/s'
+            }
+            $script:FakeProcess.WaitedMilliseconds | Should -Be 3600000
+        }
+
+        It 'records a non-zero Patch My PC exit code as a failure' {
+            $script:FakeProcess = New-FakeProcess -ExitCode 1603
+            Mock Start-Process { $script:FakeProcess }
+            Invoke-PatchMyPCUpdate -Path $script:PatchMyPCExe
+            ($script:Failed -join "`n") | Should -Match 'Patch My PC applications.*exited with code 1603'
+            $script:Succeeded.Count | Should -Be 0
+        }
+
+        It 'stops waiting after the timeout, leaves Patch My PC running, and continues' {
+            $PatchMyPCTimeoutMinutes = 5
+            $script:FakeProcess = New-FakeProcess -Exits $false
+            Mock Start-Process { $script:FakeProcess }
+            Mock Get-WinGetPath { $null }
+            Mock Get-ChocolateyPath { $null }
+            Mock Get-CommandPath { $null }
+            Mock Get-PatchMyPCPath { $script:PatchMyPCExe }
+            Mock Get-CimClass { [pscustomobject]@{ CimClassName = 'MDM_EnterpriseModernAppManagement_AppManagement01' } }
+            Mock Update-MicrosoftStoreApplication {}
+            Invoke-ApplicationUpdate -IsElevated $true
+            $script:FakeProcess.WaitedMilliseconds | Should -Be 300000
+            ($script:Failed -join "`n") |
+                Should -Match 'Patch My PC applications.*still running after 5 minutes.*left running in the background'
+            $script:FakeProcess.Killed | Should -BeFalse
+            Should -Invoke Stop-Process -Times 0 -Exactly
+            $script:Succeeded | Should -Contain 'Microsoft Store update scan'
+        }
+
+        It 'holds Patch My PC back without starting it while a browser window is open' {
+            Mock Get-Process { @((New-FakeBrowser -Name 'chrome' -HasWindow $true), (New-FakeBrowser -Name 'firefox' -HasWindow $true)) }
+            Mock Start-Process { throw 'Patch My PC must not be started' }
+            Invoke-PatchMyPCUpdate -Path $script:PatchMyPCExe
+            Should -Invoke Start-Process -Times 0 -Exactly
+            ($script:HeldBack -join "`n") | Should -Match 'Patch My PC applications.*browser is open \(chrome, firefox\).*close them and run the script again'
+            $script:Failed.Count | Should -Be 0
+            $script:Succeeded.Count | Should -Be 0
+        }
+
+        It 'looks for each supported browser by process name' {
+            Mock Get-Process {
+                param($Name)
+                $script:QueriedBrowsers = $Name
+                @()
+            }
+            Mock Start-Process { New-FakeProcess }
+            Invoke-PatchMyPCUpdate -Path $script:PatchMyPCExe
+            (@($script:QueriedBrowsers | Sort-Object) -join ',') | Should -Be 'brave,chrome,firefox,msedge,opera,vivaldi'
+        }
+
+        It 'runs Patch My PC with a warning when browsers have no window open' {
+            $script:FakeProcess = New-FakeProcess -ExitCode 0
+            Mock Get-Process { @((New-FakeBrowser -Name 'msedge' -HasWindow $false), (New-FakeBrowser -Name 'msedge' -HasWindow $false)) }
+            Mock Start-Process { $script:FakeProcess }
+            $output = Invoke-PatchMyPCUpdate -Path $script:PatchMyPCExe 6>&1 | Out-String
+            $output | Should -Match 'without a window \(msedge\)'
+            Should -Invoke Start-Process -Times 1 -Exactly
+            $script:HeldBack.Count | Should -Be 0
+            $script:Succeeded | Should -Contain 'Patch My PC applications'
+        }
+
+        It 'reports the planned run during a dry run without starting Patch My PC' {
+            $DryRun = $true
+            Mock Start-Process { throw 'Patch My PC must not be started' }
+            $output = Invoke-PatchMyPCUpdate -Path $script:PatchMyPCExe 6>&1 | Out-String
+            $output | Should -Match '\[DRY-RUN\].*PatchMyPC\.exe" /s, waiting up to 60 minutes'
+            Should -Invoke Start-Process -Times 0 -Exactly
+            $script:Planned | Should -Contain 'Patch My PC applications'
+        }
+
+        It 'reports the hold-back during a dry run when a browser window is open' {
+            $DryRun = $true
+            Mock Get-Process { @(New-FakeBrowser -Name 'msedge' -HasWindow $true) }
+            Mock Start-Process { throw 'Patch My PC must not be started' }
+            $output = Invoke-PatchMyPCUpdate -Path $script:PatchMyPCExe 6>&1 | Out-String
+            $output | Should -Match '\[DRY-RUN\] Would not run .*because a web browser is open'
+            Should -Invoke Start-Process -Times 0 -Exactly
+            ($script:HeldBack -join "`n") | Should -Match 'msedge'
+            $script:Planned.Count | Should -Be 0
         }
     }
 }
