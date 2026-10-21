@@ -129,31 +129,84 @@ function Write-Section {
     Write-Host "==> $Message" -ForegroundColor Cyan
 }
 
-# The start-up banner: the Update Everything ring-and-tick logo drawn with
-# Unicode block elements, beside the name, version, tagline and a subtitle.
-# Consoles narrower than 64 columns get a two-line compact form. NO_COLOR
-# turns colour off. This file stays pure ASCII so that Windows PowerShell 5.1
-# reads it correctly without a byte order mark, so every non-ASCII character
-# is built from its code point.
-function ConvertTo-BannerGlyph {
-    param([string]$Pattern)
-    # String.Replace is case-sensitive, unlike PowerShell's -replace.
-    # u: lower half block, n: upper half block, #: full block.
-    return $Pattern.Replace('u', [string][char]0x2584).Replace('n', [string][char]0x2580).Replace('#', [string][char]0x2588)
+# The start-up banner: the Update Everything ring-and-tick logo as ASCII art,
+# beside the name, version, tagline and a subtitle. The ring's four arcs are
+# coloured light blue, blue, green and grey around a green tick. Consoles
+# narrower than 72 columns get a short form instead, and a subtitle too long
+# for the console is shortened rather than wrapped.
+#
+# Colour: consoles that process virtual-terminal sequences (Windows 10 and
+# later, Windows Terminal, PowerShell 7) get the brand's 24-bit colours; other
+# consoles get the nearest console colours; NO_COLOR turns colour off.
+#
+# This file stays pure ASCII so that Windows PowerShell 5.1 reads it correctly
+# without a byte order mark, so the divider and bullet are built from their
+# code points.
+$script:BannerMinimumWidth = 72
+$script:BannerTextColumn = 45
+$script:BannerSgr = @{
+    BL = '38;2;96;165;250'
+    B  = '38;2;59;130;246'
+    G  = '38;2;34;197;94'
+    N  = '1;38;2;34;197;94'
+    S  = '38;2;156;163;175'
+    T  = '38;2;229;231;235'
+    D  = '38;2;107;114;128'
+}
+$script:BannerConsoleColor = @{
+    BL = 'DarkCyan'
+    B  = 'Blue'
+    G  = 'Green'
+    N  = 'Green'
+    S  = 'Gray'
+    T  = 'White'
+    D  = 'DarkGray'
+}
+
+function Get-BannerColorMode {
+    if ($env:NO_COLOR) {
+        return 'None'
+    }
+    $virtualTerminal = $false
+    try {
+        $virtualTerminal = [bool]$Host.UI.SupportsVirtualTerminal -and -not [Console]::IsOutputRedirected
+    } catch {
+        Write-Verbose "Virtual-terminal support is unknown: $($_.Exception.Message)"
+    }
+    if ($virtualTerminal) {
+        return 'Ansi'
+    }
+    return 'Console'
 }
 
 function Write-BannerLine {
-    param([object[]]$Segment = @())
+    param(
+        [object[]]$Segment = @(),
+        [ValidateSet('Ansi', 'Console', 'None')]
+        [string]$Mode = 'None'
+    )
+    if ($Mode -eq 'Console') {
+        foreach ($item in $Segment) {
+            if ($item[1]) {
+                Write-Host ([string]$item[0]) -NoNewline -ForegroundColor $script:BannerConsoleColor[$item[1]]
+            } else {
+                Write-Host ([string]$item[0]) -NoNewline
+            }
+        }
+        Write-Host ''
+        return
+    }
+
+    $escape = [string][char]27
+    $line = New-Object System.Text.StringBuilder
     foreach ($item in $Segment) {
-        $text = [string]$item[0]
-        $color = $item[1]
-        if ($env:NO_COLOR -or -not $color) {
-            Write-Host $text -NoNewline
+        if ($Mode -eq 'Ansi' -and $item[1]) {
+            [void]$line.Append($escape + '[' + $script:BannerSgr[$item[1]] + 'm' + [string]$item[0] + $escape + '[0m')
         } else {
-            Write-Host $text -NoNewline -ForegroundColor $color
+            [void]$line.Append([string]$item[0])
         }
     }
-    Write-Host ''
+    Write-Host $line.ToString()
 }
 
 function Get-ConsoleWidth {
@@ -172,6 +225,8 @@ function Get-ConsoleWidth {
 function Show-Banner {
     param([string]$Subtitle = '')
 
+    $mode = Get-BannerColorMode
+    $width = Get-ConsoleWidth
     $previousEncoding = $null
     try {
         $previousEncoding = [Console]::OutputEncoding
@@ -181,27 +236,45 @@ function Show-Banner {
     }
 
     try {
-        if ((Get-ConsoleWidth) -lt 64) {
-            Write-BannerLine @(@(([string][char]0x25CF + ' '), 'Green'), @('Update Everything ', 'Green'), @($ScriptVersion, 'DarkGray'))
-            Write-BannerLine @(, @('  Everything, carefully.', 'White'))
+        if ($width -lt $script:BannerMinimumWidth) {
+            Write-BannerLine -Mode $mode -Segment @(@(([string][char]0x25CF), 'G'), @(' ', $null), @('Update Everything', 'N'), @(' ', $null), @($ScriptVersion, 'D'))
+            Write-BannerLine -Mode $mode -Segment @(@('  ', $null), @('Everything, carefully.', 'T'))
             if ($Subtitle) {
-                Write-BannerLine @(, @("  $Subtitle", 'DarkGray'))
+                Write-BannerLine -Mode $mode -Segment @(@('  ', $null), @($Subtitle, 'D'))
             }
         } else {
-            $bar = [string][char]0x2502 + ' '
+            # Leave the last column free, so a full line never wraps.
+            $room = $width - $script:BannerTextColumn - 1
+            if ($Subtitle.Length -gt $room) {
+                $Subtitle = $Subtitle.Substring(0, $room - 3) + '...'
+            }
+            $bar = [string][char]0x2502
             $rows = @(
-                @(@('       ', $null), @((ConvertTo-BannerGlyph 'uuuu uuuu'), 'Blue')),
-                @(@('    ', $null), @((ConvertTo-BannerGlyph 'u#nnnn   nnnn#u'), 'Blue')),
-                @(@('  ', $null), @((ConvertTo-BannerGlyph 'u'), 'Green'), @('                 ', $null), @((ConvertTo-BannerGlyph 'u'), 'Gray')),
-                @(@(' ', $null), @((ConvertTo-BannerGlyph '##'), 'Green'), @('            ', $null), @((ConvertTo-BannerGlyph 'u#n'), 'Green'), @('  ', $null), @((ConvertTo-BannerGlyph '##'), 'Gray'), @('     ', $null), @($bar, 'DarkGray'), @('Update Everything ', 'Green'), @($ScriptVersion, 'DarkGray')),
-                @(@((ConvertTo-BannerGlyph '##'), 'Green'), @('        ', $null), @((ConvertTo-BannerGlyph 'u'), 'Green'), @('   ', $null), @((ConvertTo-BannerGlyph 'u#n'), 'Green'), @('    ', $null), @((ConvertTo-BannerGlyph '##'), 'Gray'), @('    ', $null), @($bar, 'DarkGray'), @('Everything, carefully.', 'White')),
-                @(@((ConvertTo-BannerGlyph '##'), 'Green'), @('       ', $null), @((ConvertTo-BannerGlyph 'n##u#n'), 'Green'), @('      ', $null), @((ConvertTo-BannerGlyph '##'), 'Gray'), @('    ', $null), @($bar, 'DarkGray'), @($Subtitle, 'DarkGray')),
-                @(@(' ', $null), @((ConvertTo-BannerGlyph '##'), 'Green'), @('        ', $null), @((ConvertTo-BannerGlyph 'nn'), 'Green'), @('       ', $null), @((ConvertTo-BannerGlyph '##'), 'Gray')),
-                @(@('  ', $null), @((ConvertTo-BannerGlyph 'n#uu'), 'Green'), @('           ', $null), @((ConvertTo-BannerGlyph 'uu#n'), 'Gray')),
-                @(@('     ', $null), @((ConvertTo-BannerGlyph 'nnnnn'), 'Green'), @('   ', $null), @((ConvertTo-BannerGlyph 'nnnnn'), 'Gray'))
+                @(@('                  ', $null), @('%', 'BL')),
+                @(@('           ', $null), @('@@@@@@@@', 'BL'), @('  ', $null), @('@@@@@@@%', 'B')),
+                @(@('        ', $null), @('@@@@@@@@@@@', 'BL'), @('  ', $null), @('@%%%%@@@@@#', 'B')),
+                @(@('      ', $null), @('@@@@@@@@@@@@@%', 'BL'), @(' ', $null), @('@@@@@@%%%@@@@', 'B')),
+                @(@('     ', $null), @('@@@@@@@@@@', 'BL'), @('          ', $null), @('@@@@@%%@@@', 'B')),
+                @(@('    ', $null), @('@@@@@@@@', 'BL'), @('                ', $null), @('@@@@@@@+', 'B')),
+                @(@('  ', $null), @('@@', 'G'), @('   ', $null), @('=@@', 'BL'), @('                    ', $null), @('@@', 'B'), @('    ', $null), @('@@', 'S')),
+                @(@('  ', $null), @('@@@@@@', 'G'), @('                  ', $null), @('@@', 'G'), @('    ', $null), @('@@@@@@', 'S')),
+                @(@(' ', $null), @('@@%%%@@', 'G'), @('                ', $null), @('@@@@@', 'G'), @('   ', $null), @('@@@@@@@', 'S')),
+                @(@(' ', $null), @('@%%%%@@', 'G'), @('              ', $null), @('@@@%@@%', 'G'), @('   ', $null), @(':@@@@@@', 'S'), @('    ', $null), @($bar, 'D'), @(' ', $null), @('Update Everything', 'N'), @(' ', $null), @($ScriptVersion, 'D')),
+                @(@(' ', $null), @('@%%%%@', 'G'), @('    ', $null), @('@@@@', 'G'), @('     ', $null), @('*@@%@@@', 'G'), @('      ', $null), @('@@@@@@', 'S'), @('    ', $null), @($bar, 'D'), @(' ', $null), @('Everything, carefully.', 'T')),
+                @(@(' ', $null), @('@%%%%@', 'G'), @('    ', $null), @('@@@@@@', 'G'), @('  ', $null), @('@@@@@@', 'G'), @('        ', $null), @('@@@@@@', 'S'), @('    ', $null), @($bar, 'D'), @(' ', $null), @($Subtitle, 'D')),
+                @(@(' ', $null), @('@%%%%@@', 'G'), @('    ', $null), @('@@@%@@@@@@@', 'G'), @('          ', $null), @('@@@@@@', 'S')),
+                @(@(' ', $null), @('@@%%%@@', 'G'), @('      ', $null), @('@@@%%@@@', 'G'), @('          ', $null), @('@@@@@@@', 'S')),
+                @(@('  ', $null), @('@@%%%@@', 'G'), @('       ', $null), @('@@@@', 'G'), @('           ', $null), @('@@@@@@@', 'S')),
+                @(@('  ', $null), @('@@@%%%@@', 'G'), @('                    ', $null), @('@@@@@@@@', 'S')),
+                @(@('   ', $null), @('@@@%%%@@@', 'G'), @('                ', $null), @('@@@@@@@@@', 'S')),
+                @(@('     ', $null), @('@@%%%%@@@@', 'G'), @('          ', $null), @('@@@@@@@@@@', 'S')),
+                @(@('      ', $null), @('@@@@%%%%@@@@@@', 'G'), @('=@@@@@@@@@@@@@', 'S')),
+                @(@('        ', $null), @('@@@@@%%%%%@', 'G'), @('  ', $null), @('@@@@@@@@@@@', 'S')),
+                @(@('           ', $null), @('@@@@@@@@', 'G'), @('  ', $null), @('@@@@@@@@', 'S')),
+                @(@('                  ', $null), @('@', 'G'), @('  ', $null), @('@', 'S'))
             )
             foreach ($row in $rows) {
-                Write-BannerLine $row
+                Write-BannerLine -Mode $mode -Segment $row
             }
         }
         Write-Host ''

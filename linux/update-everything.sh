@@ -92,11 +92,17 @@ section() {
     printf '\n==> %s\n' "$*"
 }
 
-# The start-up banner: the Update Everything ring-and-tick logo drawn with
-# Unicode block elements, beside the name, version, tagline and a subtitle.
-# Terminals narrower than 64 columns get a two-line compact form, and a locale
-# that is not UTF-8 gets a single plain-ASCII line. Colour is used only when
-# standard output is a terminal, TERM is not "dumb", and NO_COLOR is unset.
+# The start-up banner: the Update Everything ring-and-tick logo as ASCII art,
+# beside the name, version, tagline and a subtitle. The ring's four arcs are
+# coloured light blue, blue, green and grey around a green tick. The art is
+# pure ASCII, so it also prints in a locale that is not UTF-8, where the
+# divider and separator fall back to ASCII as well. Terminals narrower than 72
+# columns get a short form instead, and a subtitle too long for the terminal is
+# shortened rather than wrapped. Colour is used only when standard output is a
+# terminal, TERM is not "dumb", and NO_COLOR is unset.
+readonly BANNER_MIN_COLUMNS=72
+readonly BANNER_TEXT_COLUMN=45
+
 banner_uses_color() {
     [[ -z "${NO_COLOR:-}" && -t 1 && "${TERM:-}" != "dumb" ]]
 }
@@ -124,28 +130,34 @@ terminal_columns() {
 # print_banner [subtitle part]...
 # The parts are joined with a middle dot, or with a hyphen without UTF-8.
 print_banner() {
-    local B="" G="" S="" T="" D="" BOLD="" X=""
-    local separator=' · ' subtitle="" part bar
+    local BL="" B="" G="" S="" T="" D="" BOLD="" X=""
+    local separator=' - ' divider='|' subtitle="" part bar columns room utf8=0
 
     if banner_uses_color; then
         if [[ "${COLORTERM:-}" == *truecolor* || "${COLORTERM:-}" == *24bit* ]]; then
+            BL=$'\033[38;2;96;165;250m'
             B=$'\033[38;2;59;130;246m'
             G=$'\033[38;2;34;197;94m'
             S=$'\033[38;2;156;163;175m'
             T=$'\033[38;2;229;231;235m'
             D=$'\033[38;2;107;114;128m'
         else
+            BL=$'\033[38;5;75m'
             B=$'\033[38;5;69m'
             G=$'\033[38;5;41m'
             S=$'\033[38;5;248m'
             T=$'\033[38;5;254m'
-            D=$'\033[38;5;242m'
+            D=$'\033[38;5;243m'
         fi
         BOLD=$'\033[1m'
         X=$'\033[0m'
     fi
 
-    banner_locale_is_utf8 || separator=' - '
+    if banner_locale_is_utf8; then
+        utf8=1
+        separator=' · '
+        divider='│'
+    fi
     for part in "$@"; do
         [[ -n "$part" ]] || continue
         if [[ -n "$subtitle" ]]; then
@@ -155,33 +167,51 @@ print_banner() {
         fi
     done
 
-    if ! banner_locale_is_utf8; then
-        printf '%s[ok]%s %s%sUpdate Everything%s %s%s%s - Everything, carefully.\n' \
-            "$G" "$X" "$BOLD" "$G" "$X" "$D" "$SCRIPT_VERSION" "$X"
-        [[ -z "$subtitle" ]] || printf '     %s%s%s\n' "$D" "$subtitle" "$X"
+    columns="$(terminal_columns)"
+    if (( columns < BANNER_MIN_COLUMNS )); then
+        if (( utf8 )); then
+            printf '%s●%s %s%sUpdate Everything%s %s%s%s\n' "$G" "$X" "$BOLD" "$G" "$X" "$D" "$SCRIPT_VERSION" "$X"
+            printf '  %sEverything, carefully.%s\n' "$T" "$X"
+            [[ -z "$subtitle" ]] || printf '  %s%s%s\n' "$D" "$subtitle" "$X"
+        else
+            printf '%s[ok]%s %s%sUpdate Everything%s %s%s%s - Everything, carefully.\n' \
+                "$G" "$X" "$BOLD" "$G" "$X" "$D" "$SCRIPT_VERSION" "$X"
+            [[ -z "$subtitle" ]] || printf '     %s%s%s\n' "$D" "$subtitle" "$X"
+        fi
         printf '\n'
         return 0
     fi
 
-    if (( $(terminal_columns) < 64 )); then
-        printf '%s●%s %s%sUpdate Everything%s %s%s%s\n' "$G" "$X" "$BOLD" "$G" "$X" "$D" "$SCRIPT_VERSION" "$X"
-        printf '  %sEverything, carefully.%s\n' "$T" "$X"
-        [[ -z "$subtitle" ]] || printf '  %s%s%s\n' "$D" "$subtitle" "$X"
-        printf '\n'
-        return 0
+    # Leave the last column free, so a full line never wraps.
+    room=$(( columns - BANNER_TEXT_COLUMN - 1 ))
+    if (( ${#subtitle} > room )); then
+        subtitle="${subtitle:0:room-3}..."
     fi
 
-    bar="${D}│${X}"
+    bar="${D}${divider}${X}"
     printf '%s\n' \
-        "       ${B}▄▄▄▄ ▄▄▄▄${X}" \
-        "    ${B}▄█▀▀▀▀   ▀▀▀▀█▄${X}" \
-        "  ${G}▄${X}                 ${S}▄${X}" \
-        " ${G}██${X}            ${G}▄█▀${X}  ${S}██${X}     ${bar} ${BOLD}${G}Update Everything${X} ${D}${SCRIPT_VERSION}${X}" \
-        "${G}██${X}        ${G}▄${X}   ${G}▄█▀${X}    ${S}██${X}    ${bar} ${T}Everything, carefully.${X}" \
-        "${G}██${X}       ${G}▀██▄█▀${X}      ${S}██${X}    ${bar} ${D}${subtitle}${X}" \
-        " ${G}██${X}        ${G}▀▀${X}       ${S}██${X}" \
-        "  ${G}▀█▄▄${X}           ${S}▄▄█▀${X}" \
-        "     ${G}▀▀▀▀▀${X}   ${S}▀▀▀▀▀${X}" \
+        "                  ${BL}%${X}" \
+        "           ${BL}@@@@@@@@${X}  ${B}@@@@@@@%${X}" \
+        "        ${BL}@@@@@@@@@@@${X}  ${B}@%%%%@@@@@#${X}" \
+        "      ${BL}@@@@@@@@@@@@@%${X} ${B}@@@@@@%%%@@@@${X}" \
+        "     ${BL}@@@@@@@@@@${X}          ${B}@@@@@%%@@@${X}" \
+        "    ${BL}@@@@@@@@${X}                ${B}@@@@@@@+${X}" \
+        "  ${G}@@${X}   ${BL}=@@${X}                    ${B}@@${X}    ${S}@@${X}" \
+        "  ${G}@@@@@@${X}                  ${G}@@${X}    ${S}@@@@@@${X}" \
+        " ${G}@@%%%@@${X}                ${G}@@@@@${X}   ${S}@@@@@@@${X}" \
+        " ${G}@%%%%@@${X}              ${G}@@@%@@%${X}   ${S}:@@@@@@${X}    ${bar} ${BOLD}${G}Update Everything${X} ${D}${SCRIPT_VERSION}${X}" \
+        " ${G}@%%%%@${X}    ${G}@@@@${X}     ${G}*@@%@@@${X}      ${S}@@@@@@${X}    ${bar} ${T}Everything, carefully.${X}" \
+        " ${G}@%%%%@${X}    ${G}@@@@@@${X}  ${G}@@@@@@${X}        ${S}@@@@@@${X}    ${bar} ${D}${subtitle}${X}" \
+        " ${G}@%%%%@@${X}    ${G}@@@%@@@@@@@${X}          ${S}@@@@@@${X}" \
+        " ${G}@@%%%@@${X}      ${G}@@@%%@@@${X}          ${S}@@@@@@@${X}" \
+        "  ${G}@@%%%@@${X}       ${G}@@@@${X}           ${S}@@@@@@@${X}" \
+        "  ${G}@@@%%%@@${X}                    ${S}@@@@@@@@${X}" \
+        "   ${G}@@@%%%@@@${X}                ${S}@@@@@@@@@${X}" \
+        "     ${G}@@%%%%@@@@${X}          ${S}@@@@@@@@@@${X}" \
+        "      ${G}@@@@%%%%@@@@@@${X}${S}=@@@@@@@@@@@@@${X}" \
+        "        ${G}@@@@@%%%%%@${X}  ${S}@@@@@@@@@@@${X}" \
+        "           ${G}@@@@@@@@${X}  ${S}@@@@@@@@${X}" \
+        "                  ${G}@${X}  ${S}@${X}" \
         ""
 }
 

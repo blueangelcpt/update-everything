@@ -375,55 +375,77 @@ Describe 'update-everything Windows updater' {
                 [void]$script:BannerText.Append([string]$Object)
                 if (-not $NoNewline) { [void]$script:BannerText.Append("`n") }
             }
+            Mock Get-ConsoleWidth { 100 }
         }
 
         It 'draws the full logo with the name, tagline and subtitle aligned' {
-            Mock Get-ConsoleWidth { 100 }
+            Mock Get-BannerColorMode { 'None' }
             Show-Banner -Subtitle 'Windows 11 Pro 23H2 - dry run'
             $bar = [string][char]0x2502
-            $lines = $script:BannerText.ToString() -split "`n"
             $text = $script:BannerText.ToString()
+            $lines = $text -split "`n"
             $text | Should -BeLikeExactly "*$bar Update Everything 2.0.0*"
             $text | Should -BeLikeExactly "*$bar Everything, carefully.*"
             $text | Should -BeLikeExactly "*$bar Windows 11 Pro 23H2 - dry run*"
+            $lines.Count | Should -Be 24
             $columns = @($lines | Where-Object { $_.Contains($bar) } | ForEach-Object { $_.IndexOf($bar) } | Sort-Object -Unique)
-            $columns | Should -Be @(27)
-            $lines[0] | Should -BeExactly ('       ' + ([string][char]0x2584 * 4) + ' ' + ([string][char]0x2584 * 4))
+            $columns | Should -Be @(43)
+            $lines[0] | Should -BeExactly ((' ' * 18) + '%')
+            $lines[18] | Should -BeExactly '      @@@@%%%%@@@@@@=@@@@@@@@@@@@@'
+            $text | Should -Not -Match ([regex]::Escape([string][char]27))
         }
 
-        It 'prints the compact form in a console narrower than 64 columns' {
-            Mock Get-ConsoleWidth { 63 }
+        It 'shortens a subtitle that would wrap' {
+            Mock Get-BannerColorMode { 'None' }
+            Mock Get-ConsoleWidth { 72 }
+            Show-Banner -Subtitle 'Windows 11 Pro 23H2 (build 22631) - dry run'
+            $lines = $script:BannerText.ToString() -split "`n"
+            $script:BannerText.ToString() | Should -BeLikeExactly '*Windows 11 Pro 23H2 (bu...*'
+            @($lines | Where-Object { $_.Length -gt 71 }).Count | Should -Be 0
+        }
+
+        It 'prints the compact form in a console narrower than 72 columns' {
+            Mock Get-BannerColorMode { 'None' }
+            Mock Get-ConsoleWidth { 71 }
             Show-Banner -Subtitle 'Windows 11'
             $expected = ([string][char]0x25CF) + " Update Everything 2.0.0`n  Everything, carefully.`n  Windows 11`n`n"
             $script:BannerText.ToString() | Should -BeExactly $expected
         }
 
-        It 'uses no colour when NO_COLOR is set' {
-            Mock Get-ConsoleWidth { 100 }
+        It 'turns colour off when NO_COLOR is set' {
             $previous = $env:NO_COLOR
             try {
                 $env:NO_COLOR = '1'
-                Show-Banner
+                Get-BannerColorMode | Should -Be 'None'
             } finally {
                 $env:NO_COLOR = $previous
             }
-            Should -Invoke Write-Host -Times 0 -Exactly -ParameterFilter { $PSBoundParameters.ContainsKey('ForegroundColor') }
-            $script:BannerText.ToString() | Should -BeLikeExactly '*Update Everything 2.0.0*'
         }
 
-        It 'colours the banner otherwise' {
-            Mock Get-ConsoleWidth { 100 }
-            $previous = $env:NO_COLOR
-            try {
-                $env:NO_COLOR = $null
-                Show-Banner
-            } finally {
-                $env:NO_COLOR = $previous
-            }
-            Should -Invoke Write-Host -ParameterFilter { $ForegroundColor -eq 'Green' -and $Object -eq 'Update Everything ' }
+        It 'uses the brand colours as 24-bit escape sequences on a virtual-terminal console' {
+            Mock Get-BannerColorMode { 'None' }
+            Show-Banner -Subtitle 'Windows 11'
+            $plain = $script:BannerText.ToString()
+
+            $script:BannerText = New-Object System.Text.StringBuilder
+            Mock Get-BannerColorMode { 'Ansi' }
+            Show-Banner -Subtitle 'Windows 11'
+            $coloured = $script:BannerText.ToString()
+            $escape = [string][char]27
+            $coloured.Contains($escape + '[1;38;2;34;197;94mUpdate Everything' + $escape + '[0m') | Should -BeTrue
+            $coloured.Contains($escape + '[38;2;96;165;250m') | Should -BeTrue
+            ($coloured -replace "$escape\[[0-9;]*m", '') | Should -BeExactly $plain
         }
 
-        It 'names the operating system and dry-run mode in the run banner' -Skip:(-not $script:IsWindowsHost) {
+        It 'falls back to console colours elsewhere' {
+            Mock Get-BannerColorMode { 'Console' }
+            Show-Banner
+            Should -Invoke Write-Host -ParameterFilter { $ForegroundColor -eq 'Green' -and $Object -eq 'Update Everything' }
+            Should -Invoke Write-Host -ParameterFilter { $ForegroundColor -eq 'DarkCyan' }
+            $script:BannerText.ToString() | Should -Not -Match ([regex]::Escape([string][char]27))
+        }
+
+    It 'names the operating system and dry-run mode in the run banner' -Skip:(-not $script:IsWindowsHost) {
             $DryRun = $true
             Mock Show-Banner {}
             Mock Get-OperatingSystemName { 'Windows 11 Pro 23H2' }
