@@ -222,6 +222,16 @@ function Get-ConsoleWidth {
     return $width
 }
 
+# Return the text, shortened with "..." when it is longer than Room columns.
+# A room too small to hold anything useful leaves the text unchanged.
+function Get-BannerSubtitle {
+    param([string]$Text, [int]$Room)
+    if ($Room -ge 4 -and $Text.Length -gt $Room) {
+        return $Text.Substring(0, $Room - 3) + '...'
+    }
+    return $Text
+}
+
 function Show-Banner {
     param([string]$Subtitle = '')
 
@@ -236,18 +246,17 @@ function Show-Banner {
     }
 
     try {
+        # Each form indents the subtitle differently. Leave the last column
+        # free, so that the subtitle line never wraps.
         if ($width -lt $script:BannerMinimumWidth) {
+            $Subtitle = Get-BannerSubtitle -Text $Subtitle -Room ($width - 3)
             Write-BannerLine -Mode $mode -Segment @(@(([string][char]0x25CF), 'G'), @(' ', $null), @('Update Everything', 'N'), @(' ', $null), @($ScriptVersion, 'D'))
             Write-BannerLine -Mode $mode -Segment @(@('  ', $null), @('Everything, carefully.', 'T'))
             if ($Subtitle) {
                 Write-BannerLine -Mode $mode -Segment @(@('  ', $null), @($Subtitle, 'D'))
             }
         } else {
-            # Leave the last column free, so a full line never wraps.
-            $room = $width - $script:BannerTextColumn - 1
-            if ($Subtitle.Length -gt $room) {
-                $Subtitle = $Subtitle.Substring(0, $room - 3) + '...'
-            }
+            $Subtitle = Get-BannerSubtitle -Text $Subtitle -Room ($width - $script:BannerTextColumn - 1)
             $bar = [string][char]0x2502
             $rows = @(
                 @(@('                  ', $null), @('%', 'BL')),

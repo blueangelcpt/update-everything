@@ -111,6 +111,10 @@ check_start_up_banner() {
     assert_contains "$output" "  $subtitle" || return 1
     assert_not_contains "$output" '│' || return 1
 
+    output="$(COLUMNS=40 print_banner "$subtitle with a name long enough to need shortening" 'dry run')"
+    assert_equal '...' "$(printf '%s\n' "$output" | tail -n 1 | tail -c 4)" || return 1
+    assert_equal 39 "$(printf '%s\n' "$output" | tail -n 1 | banner_layout | awk '{ print length }')" || return 1
+
     # shellcheck disable=SC2317
     banner_locale_is_utf8() { return 1; }
     output="$(COLUMNS=100 print_banner "$subtitle" 'dry run')"
@@ -121,4 +125,8 @@ check_start_up_banner() {
     output="$(COLUMNS=71 print_banner "$subtitle" 'dry run')"
     assert_equal "[ok] Update Everything 2.0.0 - Everything, carefully.
      $subtitle - dry run" "$output" || return 1
+
+    output="$(COLUMNS=40 print_banner "$subtitle with a name long enough to need shortening" 'dry run')"
+    assert_equal '...' "$(printf '%s\n' "$output" | tail -n 1 | tail -c 4)" || return 1
+    assert_equal 39 "$(printf '%s\n' "$output" | tail -n 1 | awk '{ print length }')" || return 1
 }

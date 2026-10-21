@@ -404,6 +404,15 @@ Describe 'update-everything Windows updater' {
             @($lines | Where-Object { $_.Length -gt 71 }).Count | Should -Be 0
         }
 
+        It 'shortens a long subtitle in the compact form too' {
+            Mock Get-BannerColorMode { 'None' }
+            Mock Get-ConsoleWidth { 40 }
+            Show-Banner -Subtitle 'Windows 11 Pro 23H2 (build 22631) - dry run'
+            $lines = $script:BannerText.ToString() -split "`n"
+            $lines[2] | Should -BeExactly '  Windows 11 Pro 23H2 (build 22631) ...'
+            $lines[2].Length | Should -Be 39
+        }
+
         It 'prints the compact form in a console narrower than 72 columns' {
             Mock Get-BannerColorMode { 'None' }
             Mock Get-ConsoleWidth { 71 }

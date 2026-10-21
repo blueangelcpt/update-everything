@@ -127,6 +127,18 @@ terminal_columns() {
     printf '%s\n' "$columns"
 }
 
+# fit_banner_subtitle text room
+# Print the text, shortened with "..." when it is longer than room columns.
+# A room too small to hold anything useful leaves the text unchanged.
+fit_banner_subtitle() {
+    local text="$1" room="$2"
+
+    if (( room >= 4 && ${#text} > room )); then
+        text="${text:0:room-3}..."
+    fi
+    printf '%s\n' "$text"
+}
+
 # print_banner [subtitle part]...
 # The parts are joined with a middle dot, or with a hyphen without UTF-8.
 print_banner() {
@@ -167,13 +179,17 @@ print_banner() {
         fi
     done
 
+    # Each form indents the subtitle differently. Leave the last column free,
+    # so that the subtitle line never wraps.
     columns="$(terminal_columns)"
     if (( columns < BANNER_MIN_COLUMNS )); then
         if (( utf8 )); then
+            subtitle="$(fit_banner_subtitle "$subtitle" $(( columns - 3 )))"
             printf '%s●%s %s%sUpdate Everything%s %s%s%s\n' "$G" "$X" "$BOLD" "$G" "$X" "$D" "$SCRIPT_VERSION" "$X"
             printf '  %sEverything, carefully.%s\n' "$T" "$X"
             [[ -z "$subtitle" ]] || printf '  %s%s%s\n' "$D" "$subtitle" "$X"
         else
+            subtitle="$(fit_banner_subtitle "$subtitle" $(( columns - 6 )))"
             printf '%s[ok]%s %s%sUpdate Everything%s %s%s%s - Everything, carefully.\n' \
                 "$G" "$X" "$BOLD" "$G" "$X" "$D" "$SCRIPT_VERSION" "$X"
             [[ -z "$subtitle" ]] || printf '     %s%s%s\n' "$D" "$subtitle" "$X"
@@ -182,11 +198,8 @@ print_banner() {
         return 0
     fi
 
-    # Leave the last column free, so a full line never wraps.
     room=$(( columns - BANNER_TEXT_COLUMN - 1 ))
-    if (( ${#subtitle} > room )); then
-        subtitle="${subtitle:0:room-3}..."
-    fi
+    subtitle="$(fit_banner_subtitle "$subtitle" "$room")"
 
     bar="${D}${divider}${X}"
     printf '%s\n' \
