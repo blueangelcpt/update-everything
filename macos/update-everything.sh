@@ -11,10 +11,11 @@
 # Supported additional managers:
 #   mas (Mac App Store), Homebrew formulae and casks, MacPorts, and Nix.
 #
-# Major macOS upgrades are never installed by default, and no macOS release
-# newer than MAX_MACOS_MAJOR is installed at all. On a Mac running
-# OpenCore Legacy Patcher, a major upgrade is refused outright, because it
-# must be planned through OCLP rather than applied automatically.
+# A major macOS upgrade is never installed unless --allow-major-upgrade is
+# given. A macOS version ceiling applies only on a Mac running OpenCore Legacy
+# Patcher, where the installed OCLP version decides the newest macOS release
+# that may be installed. OCLP runs only on Intel Macs; a Mac without it has no
+# ceiling and never sees OCLP mentioned in the output.
 #
 # This script intentionally does not update project or language dependencies
 # such as Composer, npm project packages, pip environments, Cargo projects,
@@ -26,19 +27,27 @@ set -uo pipefail
 IFS=$'\n\t'
 
 readonly SCRIPT_NAME="${0##*/}"
-readonly SCRIPT_VERSION="2.0.0"
+readonly SCRIPT_VERSION="2.1.0"
 readonly SYSTEM_COMMAND_PATH="/usr/sbin:/usr/bin:/sbin:/bin:/opt/local/sbin:/opt/local/bin"
 
-# Major upgrades to macOS 26 and later are not supported by default. Raise this
-# only when the newer release has been verified on the machines it will run on.
-DEFAULT_MAX_MACOS_MAJOR=25
+# OpenCore Legacy Patcher runs only on Intel Macs, and each generation of it
+# supports a different newest macOS release: OCLP 3.x added macOS 26 Tahoe,
+# while 2.5.x and older stop at macOS 15 Sequoia. Raise these only when a newer
+# OCLP generation has been verified. macOS has no releases 16 to 25, so the
+# numbers jump from 15 straight to 26.
+readonly OCLP_TAHOE_CAPABLE_MAJOR=3
+readonly OCLP_MAX_MACOS_MAJOR_MODERN=26
+readonly OCLP_MAX_MACOS_MAJOR_LEGACY=15
 
 DO_CLEANUP=1
 DO_ADDITIONAL_MANAGERS=1
 DO_SYSTEM_UPDATE=1
 DO_GREEDY_CASKS=0
 ALLOW_MAJOR_UPGRADE=0
-MAX_MACOS_MAJOR="$DEFAULT_MAX_MACOS_MAJOR"
+# An empty ceiling means no ceiling at all, which is the case on every Mac
+# without OpenCore Legacy Patcher.
+MAX_MACOS_MAJOR=""
+MAX_MACOS_MAJOR_EXPLICIT=0
 DRY_RUN=0
 
 MACOS_VERSION=""
@@ -49,6 +58,8 @@ ARCHITECTURE=""
 
 OCLP_DETECTED=0
 OCLP_EVIDENCE=""
+OCLP_VERSION=""
+OCLP_VERSION_SOURCE=""
 
 MACOS_UPDATE_INSTALLED=0
 RESTART_REQUIRED=0
@@ -73,11 +84,20 @@ Options:
   --skip-system-update     Update only the additional managers.
   --no-cleanup             Do not remove cached downloads or unused packages.
   --greedy-casks           Also upgrade Homebrew casks that update themselves.
-  --allow-major-upgrade    Permit an upgrade to a newer major macOS release,
-                           up to the supported maximum. Refused on a Mac
-                           running OpenCore Legacy Patcher.
-  --max-macos-major N      Highest target for a major macOS upgrade
-                           (default: $DEFAULT_MAX_MACOS_MAJOR).
+  --allow-major-upgrade    Permit an upgrade to a newer major macOS release.
+USAGE
+
+    # The ceiling exists only on a Mac running OpenCore Legacy Patcher, so the
+    # option that overrides it is offered only where it has an effect.
+    if (( OCLP_DETECTED )); then
+        cat <<USAGE
+  --max-macos-major N      Highest major macOS release to install on this Mac,
+                           overriding the release that the installed OpenCore
+                           Legacy Patcher is known to support.
+USAGE
+    fi
+
+    cat <<USAGE
   --dry-run                List and evaluate updates, but do not install or
                            clean up anything.
   -h, --help               Show this help text.
@@ -288,6 +308,12 @@ oclp_device_tree_present() {
 }
 
 detect_oclp() {
+    # OpenCore Legacy Patcher exists only for Intel Macs that Apple no longer
+    # supports, so Apple silicon never looks for it and never mentions it.
+    if [[ "$ARCHITECTURE" != "x86_64" ]]; then
+        return 1
+    fi
+
     # OpenCore Legacy Patcher leaves several traces, and any single one of
     # them can be missing depending on how the Mac was set up, so each is
     # treated as independent evidence rather than as a requirement.
@@ -312,6 +338,129 @@ detect_oclp() {
     fi
 
     (( OCLP_DETECTED ))
+}
+
+# Print the first version-looking token in the input, so that one helper reads
+# a bundle version, a property list dump, or an NVRAM value alike.
+first_version_in() {
+    awk '{
+        if (match($0, /[0-9]+\.[0-9]+(\.[0-9]+)*/)) {
+            print substr($0, RSTART, RLENGTH)
+            exit
+        }
+    }'
+}
+
+oclp_bundle_version() {
+    local bundle="$1"
+
+    [[ -d "$bundle" ]] || return 1
+    run_system_command defaults read "$bundle/Contents/Info" CFBundleShortVersionString 2>/dev/null
+}
+
+oclp_root_patch_version() {
+    local plist="/System/Library/CoreServices/OpenCore-Legacy-Patcher.plist"
+
+    [[ -r "$plist" ]] || return 1
+
+    # The keys in this file have changed between OCLP releases, so only the
+    # lines that name a patcher or a version are searched for a number.
+    run_system_command plutil -p "$plist" 2>/dev/null |
+        awk 'tolower($0) ~ /patcher|version/'
+}
+
+oclp_nvram_version() {
+    oclp_nvram_present || return 1
+    run_system_command nvram 4D1FDA02-38C7-4A6A-9CC6-4BCCA8B30102:OCLP-Version 2>/dev/null
+}
+
+# The installed OCLP version decides which macOS releases this Mac may be
+# upgraded to, so it is read from the most authoritative source available.
+detect_oclp_version() {
+    local bundle candidate
+
+    # The installed application decides what OCLP can do now, so it is read
+    # before the versions recorded by an earlier root patch or boot.
+    for bundle in \
+        "/Applications/OpenCore-Patcher.app" \
+        "/System/Library/CoreServices/OpenCore-Patcher.app"; do
+        candidate="$(oclp_bundle_version "$bundle" | first_version_in)"
+        if [[ -n "$candidate" ]]; then
+            OCLP_VERSION="$candidate"
+            OCLP_VERSION_SOURCE="$bundle"
+            return 0
+        fi
+    done
+
+    candidate="$(oclp_root_patch_version | first_version_in)"
+    if [[ -n "$candidate" ]]; then
+        OCLP_VERSION="$candidate"
+        OCLP_VERSION_SOURCE="the root patch property list"
+        return 0
+    fi
+
+    candidate="$(oclp_nvram_version | first_version_in)"
+    if [[ -n "$candidate" ]]; then
+        OCLP_VERSION="$candidate"
+        OCLP_VERSION_SOURCE="the OCLP-Version NVRAM variable"
+        return 0
+    fi
+
+    OCLP_VERSION=""
+    OCLP_VERSION_SOURCE=""
+    return 1
+}
+
+# Only a Mac running OpenCore Legacy Patcher has a ceiling, and the installed
+# OCLP version sets it. An explicit --max-macos-major always wins.
+resolve_macos_ceiling() {
+    if (( MAX_MACOS_MAJOR_EXPLICIT )); then
+        return 0
+    fi
+
+    if (( ! OCLP_DETECTED )); then
+        MAX_MACOS_MAJOR=""
+        return 0
+    fi
+
+    local oclp_major="${OCLP_VERSION%%.*}"
+
+    # An unreadable OCLP version is treated as an old one, because installing
+    # a release that OCLP cannot patch leaves the Mac without its drivers.
+    if [[ "$oclp_major" =~ ^[0-9]+$ ]] && (( oclp_major >= OCLP_TAHOE_CAPABLE_MAJOR )); then
+        MAX_MACOS_MAJOR="$OCLP_MAX_MACOS_MAJOR_MODERN"
+    else
+        MAX_MACOS_MAJOR="$OCLP_MAX_MACOS_MAJOR_LEGACY"
+    fi
+}
+
+report_macos_ceiling() {
+    if [[ -z "$MAX_MACOS_MAJOR" ]]; then
+        return 0
+    fi
+
+    if (( OCLP_DETECTED && ! MAX_MACOS_MAJOR_EXPLICIT )); then
+        if [[ -n "$OCLP_VERSION" ]]; then
+            info "OpenCore Legacy Patcher $OCLP_VERSION supports macOS up to $MAX_MACOS_MAJOR, which is the ceiling for this run."
+        else
+            warn "The OpenCore Legacy Patcher version is unknown, so macOS $MAX_MACOS_MAJOR is assumed as the ceiling. Override it with --max-macos-major."
+        fi
+    fi
+
+    if (( MACOS_MAJOR > MAX_MACOS_MAJOR )); then
+        warn "This Mac already runs macOS $MACOS_MAJOR, which is above the ceiling of macOS $MAX_MACOS_MAJOR. Updates within that release are still installed."
+    fi
+}
+
+# `--help` is answered before the run begins, so the OCLP state that decides
+# which options are listed has to be established on its own.
+prepare_help_context() {
+    if [[ -z "$ARCHITECTURE" ]]; then
+        ARCHITECTURE="$(run_system_command uname -m 2>/dev/null)"
+    fi
+
+    detect_oclp >/dev/null 2>&1
+    return 0
 }
 
 # Parse `softwareupdate --list` into one record per update. ASCII file
@@ -392,8 +541,8 @@ should_install_update() {
         return 1
     fi
 
-    # A configured ceiling controls upgrades, not security and point updates
-    # for the release that is already running.
+    # A ceiling restricts upgrades, not the security and point updates for the
+    # release that is already running.
     if (( major == MACOS_MAJOR )); then
         return 0
     fi
@@ -403,13 +552,18 @@ should_install_update() {
         return 1
     fi
 
-    if (( major > MAX_MACOS_MAJOR )); then
-        printf 'macOS %s is above the supported maximum of macOS %s' "$major" "$MAX_MACOS_MAJOR"
-        return 1
-    fi
-
-    if (( OCLP_DETECTED )); then
-        printf 'a major upgrade must be planned through OpenCore Legacy Patcher'
+    if [[ -n "$MAX_MACOS_MAJOR" ]] && (( major > MAX_MACOS_MAJOR )); then
+        if (( OCLP_DETECTED && ! MAX_MACOS_MAJOR_EXPLICIT )); then
+            if [[ -n "$OCLP_VERSION" ]]; then
+                printf 'OpenCore Legacy Patcher %s supports macOS up to %s, not macOS %s' \
+                    "$OCLP_VERSION" "$MAX_MACOS_MAJOR" "$major"
+            else
+                printf 'the OpenCore Legacy Patcher version is unknown, so macOS %s is the assumed maximum' \
+                    "$MAX_MACOS_MAJOR"
+            fi
+        else
+            printf 'macOS %s is above the configured maximum of macOS %s' "$major" "$MAX_MACOS_MAJOR"
+        fi
         return 1
     fi
 
@@ -618,11 +772,19 @@ print_summary() {
     fi
     printf '\n'
 
+    # Neither OpenCore Legacy Patcher nor a ceiling is reported on a Mac that
+    # has neither of them.
     if (( OCLP_DETECTED )); then
-        printf 'OpenCore Legacy Patcher: detected (%s)\n' "$OCLP_EVIDENCE"
+        if [[ -n "$OCLP_VERSION" ]]; then
+            printf 'OpenCore Legacy Patcher: %s (%s)\n' "$OCLP_VERSION" "$OCLP_EVIDENCE"
+        else
+            printf 'OpenCore Legacy Patcher: detected, version unknown (%s)\n' "$OCLP_EVIDENCE"
+        fi
     fi
 
-    printf 'Configured ceiling for major upgrades: macOS %s\n' "$MAX_MACOS_MAJOR"
+    if [[ -n "$MAX_MACOS_MAJOR" ]]; then
+        printf 'Ceiling for major upgrades: macOS %s\n' "$MAX_MACOS_MAJOR"
+    fi
 
     if ((${#SUCCEEDED[@]})); then
         printf '\nCompleted:\n'
@@ -691,16 +853,18 @@ main() {
                 ;;
             --max-macos-major)
                 if (($# < 2)) || [[ ! "$2" =~ ^[1-9][0-9]*$ ]]; then
-                    error "--max-macos-major requires a whole number, for example: --max-macos-major 25"
+                    error "--max-macos-major requires a whole number, for example: --max-macos-major 26"
                     return 2
                 fi
                 MAX_MACOS_MAJOR="$2"
+                MAX_MACOS_MAJOR_EXPLICIT=1
                 shift
                 ;;
             --dry-run)
                 DRY_RUN=1
                 ;;
             -h|--help)
+                prepare_help_context
                 usage
                 return 0
                 ;;
@@ -710,6 +874,7 @@ main() {
                 ;;
             *)
                 error "Unknown option: $1"
+                prepare_help_context
                 usage >&2
                 return 2
                 ;;
@@ -738,15 +903,21 @@ main() {
     printf '%s %s\n' "$SCRIPT_NAME" "$SCRIPT_VERSION"
     info "Detected system: $MACOS_NAME $MACOS_VERSION on ${HARDWARE_MODEL:-an unknown model} (${ARCHITECTURE:-unknown architecture})"
 
+    # A Mac without OpenCore Legacy Patcher says nothing about it, and has no
+    # ceiling unless one was asked for explicitly.
     if detect_oclp; then
-        info "OpenCore Legacy Patcher detected: $OCLP_EVIDENCE"
-        warn "This Mac runs macOS through OpenCore Legacy Patcher. Major upgrades are refused, and root patches must be re-applied after any macOS update."
-        warn "Update OpenCore Legacy Patcher itself before installing macOS updates, so that the installed version supports this release."
+        detect_oclp_version
+        if [[ -n "$OCLP_VERSION" ]]; then
+            info "OpenCore Legacy Patcher $OCLP_VERSION detected from $OCLP_VERSION_SOURCE; evidence: $OCLP_EVIDENCE"
+        else
+            info "OpenCore Legacy Patcher detected, but its version could not be read; evidence: $OCLP_EVIDENCE"
+        fi
+        warn "Root patches are removed by a macOS update and must be re-applied in OpenCore Legacy Patcher afterwards."
+        warn "Update OpenCore Legacy Patcher itself first, so that the installed version supports the release being applied."
     fi
 
-    if (( MACOS_MAJOR > MAX_MACOS_MAJOR )); then
-        warn "This Mac already runs macOS $MACOS_MAJOR, which is above the supported maximum of macOS $MAX_MACOS_MAJOR. Updates within that release are still installed."
-    fi
+    resolve_macos_ceiling
+    report_macos_ceiling
 
     if (( DO_SYSTEM_UPDATE )); then
         if validate_privileges; then

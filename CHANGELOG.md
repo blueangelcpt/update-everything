@@ -3,6 +3,30 @@
 All notable changes are documented here. The project uses one repository-wide
 [Semantic Version](https://semver.org/) for Linux, Windows, and macOS.
 
+## [2.1.0] - 2026-10-21
+
+### Changed
+
+- Make the macOS version ceiling conditional on OpenCore Legacy Patcher. A Mac
+  without OCLP now has no ceiling at all: a major upgrade still needs
+  `--allow-major-upgrade`, but no release is refused for being too new, because
+  Apple offers a major upgrade only to a Mac it supports.
+- Derive the ceiling on an OCLP Mac from the installed OCLP version instead of
+  a fixed number: OCLP 3.x and newer may install up to macOS 26 Tahoe, while
+  2.5.x and older stop at macOS 15 Sequoia. An unreadable OCLP version is
+  treated as an old one. The previous default of "macOS 25" named a release
+  that does not exist, since macOS has no releases 16 to 25.
+- Replace the outright refusal of every major upgrade on an OCLP Mac with the
+  version-derived ceiling, so that an OCLP release which does support the
+  target may install it when `--allow-major-upgrade` is given.
+- Read the OCLP version from the installed application in preference to the
+  version recorded by an earlier root patch or boot, and report which source
+  answered.
+- Say nothing about OpenCore Legacy Patcher on a Mac that does not have it.
+  The summary omits the OCLP and ceiling lines, held-back reasons never name
+  it, and `--help` lists `--max-macos-major` only where a ceiling applies.
+- Skip OCLP detection entirely on Apple silicon, which OCLP does not support.
+
 ## [2.0.0] - 2026-08-09
 
 First consolidated cross-platform release containing Linux, Windows, and macOS
@@ -75,4 +99,5 @@ support.
   credentials not persisted, per-job timeouts, and no live operating-system
   updates.
 
+[2.1.0]: https://github.com/blueangelcpt/update-everything/releases/tag/v2.1.0
 [2.0.0]: https://github.com/blueangelcpt/update-everything/releases/tag/v2.0.0

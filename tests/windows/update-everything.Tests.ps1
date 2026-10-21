@@ -39,7 +39,7 @@ Describe 'update-everything Windows updater' {
     }
 
     It 'uses the consolidated repository version' {
-        $ScriptVersion | Should -Be '2.0.0'
+        $ScriptVersion | Should -Be '2.1.0'
     }
 
     It 'rejects conflicting system modes with exit code 2' {
