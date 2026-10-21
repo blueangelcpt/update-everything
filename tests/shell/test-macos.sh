@@ -213,6 +213,7 @@ expect_interrupted_run() {
     output="$(main 2>&1)"; status=$?
     assert_status "$expected_status" "$status" || return 1
     assert_contains "$output" "Received SIG$signal" || return 1
+    assert_contains "$output" 'Update Everything 2.0.0' || return 1
     assert_contains "$output" '==> Summary' || return 1
     assert_contains "$output" '- macOS updates' || return 1
     assert_contains "$output" "Interrupted by SIG$signal:" || return 1
@@ -230,6 +231,10 @@ test_sigterm_prints_summary_and_exits_143() {
     expect_interrupted_run TERM 143
 }
 
+test_start_up_banner() {
+    check_start_up_banner 'macOS 14.6'
+}
+
 run_test 'help, version, invalid and conflicting options' test_help_version_and_invalid_options
 run_test 'supported platform and root guards' test_platform_and_root_guards
 run_test 'complete macOS/OCLP release decision matrix' test_release_decision_matrix
@@ -242,5 +247,6 @@ run_test 'malformed softwareupdate output fails closed' test_malformed_softwareu
 run_test 'held-back summary and manager failure isolation' test_held_back_summary_and_failure_isolation
 run_test 'SIGINT prints the summary and exits 130' test_sigint_prints_summary_and_exits_130
 run_test 'SIGTERM prints the summary and exits 143' test_sigterm_prints_summary_and_exits_143
+run_test 'start-up banner forms, alignment and colour' test_start_up_banner
 
 finish_tests

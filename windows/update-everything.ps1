@@ -129,6 +129,93 @@ function Write-Section {
     Write-Host "==> $Message" -ForegroundColor Cyan
 }
 
+# The start-up banner: the Update Everything ring-and-tick logo drawn with
+# Unicode block elements, beside the name, version, tagline and a subtitle.
+# Consoles narrower than 64 columns get a two-line compact form. NO_COLOR
+# turns colour off. This file stays pure ASCII so that Windows PowerShell 5.1
+# reads it correctly without a byte order mark, so every non-ASCII character
+# is built from its code point.
+function ConvertTo-BannerGlyph {
+    param([string]$Pattern)
+    # String.Replace is case-sensitive, unlike PowerShell's -replace.
+    # u: lower half block, n: upper half block, #: full block.
+    return $Pattern.Replace('u', [string][char]0x2584).Replace('n', [string][char]0x2580).Replace('#', [string][char]0x2588)
+}
+
+function Write-BannerLine {
+    param([object[]]$Segment = @())
+    foreach ($item in $Segment) {
+        $text = [string]$item[0]
+        $color = $item[1]
+        if ($env:NO_COLOR -or -not $color) {
+            Write-Host $text -NoNewline
+        } else {
+            Write-Host $text -NoNewline -ForegroundColor $color
+        }
+    }
+    Write-Host ''
+}
+
+function Get-ConsoleWidth {
+    $width = 0
+    try {
+        $width = [int]$Host.UI.RawUI.WindowSize.Width
+    } catch {
+        Write-Verbose "The console width is unavailable: $($_.Exception.Message)"
+    }
+    if ($width -le 0) {
+        $width = 80
+    }
+    return $width
+}
+
+function Show-Banner {
+    param([string]$Subtitle = '')
+
+    $previousEncoding = $null
+    try {
+        $previousEncoding = [Console]::OutputEncoding
+        [Console]::OutputEncoding = [Text.Encoding]::UTF8
+    } catch {
+        Write-Verbose "The console output encoding cannot be changed: $($_.Exception.Message)"
+    }
+
+    try {
+        if ((Get-ConsoleWidth) -lt 64) {
+            Write-BannerLine @(@(([string][char]0x25CF + ' '), 'Green'), @('Update Everything ', 'Green'), @($ScriptVersion, 'DarkGray'))
+            Write-BannerLine @(, @('  Everything, carefully.', 'White'))
+            if ($Subtitle) {
+                Write-BannerLine @(, @("  $Subtitle", 'DarkGray'))
+            }
+        } else {
+            $bar = [string][char]0x2502 + ' '
+            $rows = @(
+                @(@('       ', $null), @((ConvertTo-BannerGlyph 'uuuu uuuu'), 'Blue')),
+                @(@('    ', $null), @((ConvertTo-BannerGlyph 'u#nnnn   nnnn#u'), 'Blue')),
+                @(@('  ', $null), @((ConvertTo-BannerGlyph 'u'), 'Green'), @('                 ', $null), @((ConvertTo-BannerGlyph 'u'), 'Gray')),
+                @(@(' ', $null), @((ConvertTo-BannerGlyph '##'), 'Green'), @('            ', $null), @((ConvertTo-BannerGlyph 'u#n'), 'Green'), @('  ', $null), @((ConvertTo-BannerGlyph '##'), 'Gray'), @('     ', $null), @($bar, 'DarkGray'), @('Update Everything ', 'Green'), @($ScriptVersion, 'DarkGray')),
+                @(@((ConvertTo-BannerGlyph '##'), 'Green'), @('        ', $null), @((ConvertTo-BannerGlyph 'u'), 'Green'), @('   ', $null), @((ConvertTo-BannerGlyph 'u#n'), 'Green'), @('    ', $null), @((ConvertTo-BannerGlyph '##'), 'Gray'), @('    ', $null), @($bar, 'DarkGray'), @('Everything, carefully.', 'White')),
+                @(@((ConvertTo-BannerGlyph '##'), 'Green'), @('       ', $null), @((ConvertTo-BannerGlyph 'n##u#n'), 'Green'), @('      ', $null), @((ConvertTo-BannerGlyph '##'), 'Gray'), @('    ', $null), @($bar, 'DarkGray'), @($Subtitle, 'DarkGray')),
+                @(@(' ', $null), @((ConvertTo-BannerGlyph '##'), 'Green'), @('        ', $null), @((ConvertTo-BannerGlyph 'nn'), 'Green'), @('       ', $null), @((ConvertTo-BannerGlyph '##'), 'Gray')),
+                @(@('  ', $null), @((ConvertTo-BannerGlyph 'n#uu'), 'Green'), @('           ', $null), @((ConvertTo-BannerGlyph 'uu#n'), 'Gray')),
+                @(@('     ', $null), @((ConvertTo-BannerGlyph 'nnnnn'), 'Green'), @('   ', $null), @((ConvertTo-BannerGlyph 'nnnnn'), 'Gray'))
+            )
+            foreach ($row in $rows) {
+                Write-BannerLine $row
+            }
+        }
+        Write-Host ''
+    } finally {
+        if ($null -ne $previousEncoding) {
+            try {
+                [Console]::OutputEncoding = $previousEncoding
+            } catch {
+                Write-Verbose "The console output encoding cannot be restored: $($_.Exception.Message)"
+            }
+        }
+    }
+}
+
 function Test-Administrator {
     $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
     $principal = New-Object Security.Principal.WindowsPrincipal($identity)
@@ -853,7 +940,11 @@ function Invoke-Main {
     $operatingSystem = Get-OperatingSystemName
     $isElevated = Test-Administrator
 
-    Write-Host "$ScriptName $ScriptVersion"
+    $bannerSubtitle = $operatingSystem
+    if ($DryRun) {
+        $bannerSubtitle += ' - dry run'
+    }
+    Show-Banner -Subtitle $bannerSubtitle
     Write-Info "Detected operating system: $operatingSystem"
 
     if ($DryRun) {

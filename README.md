@@ -8,6 +8,8 @@ A small collection of scripts that updates the operating system and supported pa
 
 The project is intended for people who want a straightforward way to install all available software updates without remembering a different set of commands for every platform or Linux distribution.
 
+Project website: <https://blueangelcpt.github.io/update-everything/>
+
 ## Current status
 
 | Platform | Script | Status |
@@ -432,6 +434,34 @@ updates, or clean up packages. A dry run is a preview of orchestration, not a
 guarantee that a later live update will succeed.
 
 Always keep current backups of important data before applying system-wide updates.
+
+## Start-up banner
+
+Every script opens with the Update Everything logo drawn in Unicode block
+characters, next to the version, the tagline, and the detected operating system
+(with `dry run` appended in dry-run mode):
+
+```text
+       ▄▄▄▄ ▄▄▄▄
+    ▄█▀▀▀▀   ▀▀▀▀█▄
+  ▄                 ▄
+ ██            ▄█▀  ██     │ Update Everything 2.0.0
+██        ▄   ▄█▀    ██    │ Everything, carefully.
+██       ▀██▄█▀      ██    │ Ubuntu 24.04 LTS · dry run
+ ██        ▀▀       ██
+  ▀█▄▄           ▄▄█▀
+     ▀▀▀▀▀   ▀▀▀▀▀
+```
+
+The banner adapts to where it is printed:
+
+- A terminal narrower than 64 columns gets a two-line compact form instead.
+- On Linux and macOS, a locale that is not UTF-8 gets one plain-ASCII line.
+- Colour is used only in a terminal. Setting
+  [`NO_COLOR`](https://no-color.org) turns it off on every platform, and the
+  Linux and macOS scripts also omit it when `TERM` is `dumb` or output is
+  redirected.
+- `--help` and `--version` (`-ShowVersion` on Windows) print no banner.
 
 ## Exit codes
 

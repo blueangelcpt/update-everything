@@ -18,6 +18,13 @@ All notable changes are documented here. The project uses one repository-wide
   run starts no further updater, prints the summary of what had completed,
   failed, or been held back along with the updater that was interrupted, and
   exits `130` or `143`.
+- Open every run with the Update Everything start-up banner: the logo in
+  Unicode block characters beside the version, the tagline, the detected
+  operating system and the dry-run mode. Terminals narrower than 64 columns
+  get a compact two-line form, non-UTF-8 locales on Linux and macOS get a
+  plain-ASCII line, and colour honours `NO_COLOR`. The banner replaces the
+  plain `update-everything <version>` line printed at the start of a run.
+- Publish the project website on GitHub Pages from the `gh-pages` branch.
 
 ### Documentation
 

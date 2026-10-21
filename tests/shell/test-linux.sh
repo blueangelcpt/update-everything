@@ -496,6 +496,7 @@ expect_interrupted_run() {
     output="$(main 2>&1)"; status=$?
     assert_status "$expected_status" "$status" || return 1
     assert_contains "$output" "Received SIG$signal" || return 1
+    assert_contains "$output" 'Update Everything 2.0.0' || return 1
     assert_contains "$output" '==> Summary' || return 1
     assert_contains "$output" 'Completed:' || return 1
     assert_contains "$output" '- System packages (apt)' || return 1
@@ -512,6 +513,10 @@ test_sigint_prints_summary_and_exits_130() {
 
 test_sigterm_prints_summary_and_exits_143() {
     expect_interrupted_run TERM 143
+}
+
+test_start_up_banner() {
+    check_start_up_banner 'Ubuntu 24.04 LTS'
 }
 
 run_test 'help and version output' test_help_and_version
@@ -537,5 +542,6 @@ run_test '--skip-system-update skips detection and privilege validation' test_sk
 run_test '--skip-system-update elevates Snap only on demand' test_skip_system_update_elevates_snap_on_demand
 run_test 'SIGINT prints the summary and exits 130' test_sigint_prints_summary_and_exits_130
 run_test 'SIGTERM prints the summary and exits 143' test_sigterm_prints_summary_and_exits_143
+run_test 'start-up banner forms, alignment and colour' test_start_up_banner
 
 finish_tests

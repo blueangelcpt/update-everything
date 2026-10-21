@@ -92,6 +92,99 @@ section() {
     printf '\n==> %s\n' "$*"
 }
 
+# The start-up banner: the Update Everything ring-and-tick logo drawn with
+# Unicode block elements, beside the name, version, tagline and a subtitle.
+# Terminals narrower than 64 columns get a two-line compact form, and a locale
+# that is not UTF-8 gets a single plain-ASCII line. Colour is used only when
+# standard output is a terminal, TERM is not "dumb", and NO_COLOR is unset.
+banner_uses_color() {
+    [[ -z "${NO_COLOR:-}" && -t 1 && "${TERM:-}" != "dumb" ]]
+}
+
+banner_locale_is_utf8() {
+    case "${LC_ALL:-${LC_CTYPE:-${LANG:-}}}" in
+        *UTF-8*|*utf-8*|*UTF8*|*utf8*) return 0 ;;
+    esac
+    return 1
+}
+
+terminal_columns() {
+    local columns="${COLUMNS:-}" tput_path
+
+    if [[ ! "$columns" =~ ^[0-9]+$ ]]; then
+        columns=""
+        if tput_path="$(find_system_command tput)"; then
+            columns="$("$tput_path" cols 2>/dev/null)" || columns=""
+        fi
+    fi
+    [[ "$columns" =~ ^[0-9]+$ ]] || columns=80
+    printf '%s\n' "$columns"
+}
+
+# print_banner [subtitle part]...
+# The parts are joined with a middle dot, or with a hyphen without UTF-8.
+print_banner() {
+    local B="" G="" S="" T="" D="" BOLD="" X=""
+    local separator=' · ' subtitle="" part bar
+
+    if banner_uses_color; then
+        if [[ "${COLORTERM:-}" == *truecolor* || "${COLORTERM:-}" == *24bit* ]]; then
+            B=$'\033[38;2;59;130;246m'
+            G=$'\033[38;2;34;197;94m'
+            S=$'\033[38;2;156;163;175m'
+            T=$'\033[38;2;229;231;235m'
+            D=$'\033[38;2;107;114;128m'
+        else
+            B=$'\033[38;5;69m'
+            G=$'\033[38;5;41m'
+            S=$'\033[38;5;248m'
+            T=$'\033[38;5;254m'
+            D=$'\033[38;5;242m'
+        fi
+        BOLD=$'\033[1m'
+        X=$'\033[0m'
+    fi
+
+    banner_locale_is_utf8 || separator=' - '
+    for part in "$@"; do
+        [[ -n "$part" ]] || continue
+        if [[ -n "$subtitle" ]]; then
+            subtitle="$subtitle$separator$part"
+        else
+            subtitle="$part"
+        fi
+    done
+
+    if ! banner_locale_is_utf8; then
+        printf '%s[ok]%s %s%sUpdate Everything%s %s%s%s - Everything, carefully.\n' \
+            "$G" "$X" "$BOLD" "$G" "$X" "$D" "$SCRIPT_VERSION" "$X"
+        [[ -z "$subtitle" ]] || printf '     %s%s%s\n' "$D" "$subtitle" "$X"
+        printf '\n'
+        return 0
+    fi
+
+    if (( $(terminal_columns) < 64 )); then
+        printf '%s●%s %s%sUpdate Everything%s %s%s%s\n' "$G" "$X" "$BOLD" "$G" "$X" "$D" "$SCRIPT_VERSION" "$X"
+        printf '  %sEverything, carefully.%s\n' "$T" "$X"
+        [[ -z "$subtitle" ]] || printf '  %s%s%s\n' "$D" "$subtitle" "$X"
+        printf '\n'
+        return 0
+    fi
+
+    bar="${D}│${X}"
+    printf '%s\n' \
+        "       ${B}▄▄▄▄ ▄▄▄▄${X}" \
+        "    ${B}▄█▀▀▀▀   ▀▀▀▀█▄${X}" \
+        "  ${G}▄${X}                 ${S}▄${X}" \
+        " ${G}██${X}            ${G}▄█▀${X}  ${S}██${X}     ${bar} ${BOLD}${G}Update Everything${X} ${D}${SCRIPT_VERSION}${X}" \
+        "${G}██${X}        ${G}▄${X}   ${G}▄█▀${X}    ${S}██${X}    ${bar} ${T}Everything, carefully.${X}" \
+        "${G}██${X}       ${G}▀██▄█▀${X}      ${S}██${X}    ${bar} ${D}${subtitle}${X}" \
+        " ${G}██${X}        ${G}▀▀${X}       ${S}██${X}" \
+        "  ${G}▀█▄▄${X}           ${S}▄▄█▀${X}" \
+        "     ${G}▀▀▀▀▀${X}   ${S}▀▀▀▀▀${X}" \
+        ""
+}
+
 have_command() {
     command -v "$1" >/dev/null 2>&1
 }
@@ -736,7 +829,11 @@ main() {
     load_os_release
     select_privilege_tool
 
-    printf '%s %s\n' "$SCRIPT_NAME" "$SCRIPT_VERSION"
+    if (( DRY_RUN )); then
+        print_banner "$DISTRO_NAME" "dry run"
+    else
+        print_banner "$DISTRO_NAME"
+    fi
     info "Detected distribution: $DISTRO_NAME"
 
     if (( ! DO_SYSTEM_UPDATE )); then

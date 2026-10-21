@@ -60,3 +60,48 @@ finish_tests() {
     fi
     printf 'All %d tests passed.\n' "$TESTS_RUN"
 }
+
+# Replace each banner glyph with one ASCII character, so that column positions
+# can be compared byte for byte whatever the locale of the test run.
+banner_layout() {
+    sed -e 's/▄/u/g' -e 's/▀/n/g' -e 's/█/#/g' -e 's/│/|/g' -e 's/●/o/g' -e 's/·/./g'
+}
+
+# Shared by the Linux and macOS suites: both scripts embed the same banner.
+# Run inside run_test's subshell, so the locale stub does not leak.
+check_start_up_banner() {
+    local subtitle="$1"
+    local output plain columns
+
+    # shellcheck disable=SC2317
+    banner_locale_is_utf8() { return 0; }
+
+    output="$(COLUMNS=100 print_banner "$subtitle" 'dry run')"
+    assert_contains "$output" '│ Update Everything 2.0.0' || return 1
+    assert_contains "$output" '│ Everything, carefully.' || return 1
+    assert_contains "$output" "│ $subtitle · dry run" || return 1
+    assert_contains "$output" '▀██▄█▀' || return 1
+    assert_not_contains "$output" $'\033' || return 1
+    columns="$(printf '%s\n' "$output" | banner_layout | awk 'index($0, "|") { print index($0, "|") }' | sort -u)"
+    assert_equal 28 "$columns" || return 1
+    plain="$output"
+
+    # shellcheck disable=SC2317
+    banner_uses_color() { return 0; }
+    output="$(COLUMNS=100 print_banner "$subtitle" 'dry run')"
+    assert_contains "$output" $'\033[0m' || return 1
+    assert_equal "$plain" "$(printf '%s\n' "$output" | sed $'s/\033\\[[0-9;]*m//g')" || return 1
+    # shellcheck disable=SC2317
+    banner_uses_color() { return 1; }
+
+    output="$(COLUMNS=63 print_banner "$subtitle")"
+    assert_contains "$output" '● Update Everything 2.0.0' || return 1
+    assert_contains "$output" "  $subtitle" || return 1
+    assert_not_contains "$output" '│' || return 1
+
+    # shellcheck disable=SC2317
+    banner_locale_is_utf8() { return 1; }
+    output="$(COLUMNS=100 print_banner "$subtitle" 'dry run')"
+    assert_equal "[ok] Update Everything 2.0.0 - Everything, carefully.
+     $subtitle - dry run" "$output" || return 1
+}
