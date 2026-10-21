@@ -1,0 +1,20 @@
+# Keep the SHA-pinned GitHub Actions in .github/workflows current. Dependabot
+# updates the pinned commit and its version comment together, so the workflow
+# keeps both the supply-chain protection of a pin and a readable version.
+#
+# The CI tool pins inside the workflow steps (ShellCheck 0.10.0 and its
+# checksum, Pester 5.7.1, PSScriptAnalyzer 1.25.0) are not visible to
+# Dependabot and are reviewed by hand.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: ci
+    groups:
+      github-actions:
+        patterns:
+          - "*"
