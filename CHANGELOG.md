@@ -19,9 +19,18 @@ All notable changes are documented here. The project uses one repository-wide
 - Replace the outright refusal of every major upgrade on an OCLP Mac with the
   version-derived ceiling, so that an OCLP release which does support the
   target may install it when `--allow-major-upgrade` is given.
-- Read the OCLP version from the installed application in preference to the
-  version recorded by an earlier root patch or boot, and report which source
-  answered.
+- Read the version of each OCLP component separately and let the oldest one
+  set the ceiling. OCLP updates the application, the bootloader and the root
+  patches as three separate steps, so a 3.x application over a 2.5.x
+  bootloader is treated as 2.5.x rather than unlocking macOS 26. The active
+  bootloader's version comes from the `OCLP-Version` NVRAM variable, and the
+  version counts as unconfirmed, keeping the macOS 15 ceiling, unless both it
+  and the application can be read. The output names every component and the
+  one that set the ceiling, and warns when they differ.
+- Read the root patch version from the exact `OpenCore Legacy Patcher` key of
+  its property list. Scanning `plutil -p` output for version-like lines found
+  `OS Version` first, so a 2.5.1 installation patched on macOS 15.7.1 was read
+  as OCLP "15.7.1" and could unlock macOS 26.
 - Say nothing about OpenCore Legacy Patcher on a Mac that does not have it.
   The summary omits the OCLP and ceiling lines, held-back reasons never name
   it, and `--help` lists `--max-macos-major` only where a ceiling applies.

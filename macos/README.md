@@ -39,7 +39,7 @@ ceiling that `--allow-major-upgrade` cannot cross:
 |---|---|
 | 3.x and newer | macOS 26 Tahoe |
 | 2.5.x and older | macOS 15 Sequoia |
-| Version unreadable | macOS 15 Sequoia, assumed |
+| Version not confirmed | macOS 15 Sequoia, assumed |
 
 macOS has no releases 16 to 25, so the supported numbers jump from 15 straight
 to 26. An OCLP generation newer than 3.x keeps the macOS 26 ceiling until it
@@ -68,21 +68,33 @@ because any one of them can be absent depending on how the Mac was set up:
 - The `OCLP-Version` NVRAM variable
 - An `opencore-version` entry in the booted device tree
 
-The OCLP version is then read from the first of these that answers:
+OCLP is updated in [three separate steps](https://github.com/dortania/OpenCore-Legacy-Patcher/blob/main/docs/FAQ.md#how-do-i-make-sure-im-all-up-to-date)
+— the application, then the bootloader, then the root patches — so a Mac can
+have a new application while it still boots through an old bootloader. The
+script reads each component's version separately:
 
-1. `CFBundleShortVersionString` of `/Applications/OpenCore-Patcher.app`
-2. The same key in `/System/Library/CoreServices/OpenCore-Patcher.app`
-3. The root patch property list in `/System/Library/CoreServices`
-4. The `OCLP-Version` NVRAM variable
+| Component | Read from |
+|---|---|
+| Application | `CFBundleShortVersionString` of `/Applications/OpenCore-Patcher.app`, else of `/System/Library/CoreServices/OpenCore-Patcher.app` |
+| Active bootloader | The `OCLP-Version` NVRAM variable, which OCLP writes into the EFI configuration when it builds the bootloader |
+| Root patches | Only the `OpenCore Legacy Patcher` key of `/System/Library/CoreServices/OpenCore-Legacy-Patcher.plist`; that file also records the patched macOS version and other version numbers, which are never read |
 
-The installed application is preferred, because it is what will re-apply the
-root patches after the update, and so it decides which releases are safe.
+The **oldest** of these sets the OCLP version used for the ceiling, so a 3.x
+application over a 2.5.x bootloader is treated as 2.5.x. The version counts as
+**not confirmed** — and the macOS 15 ceiling applies — unless both the active
+bootloader and the application can be read: the Mac boots through the first,
+and only the second can re-apply root patches after an upgrade. A Mac that has
+never needed root patches records none, and that component is then ignored.
+
+The output names every component's version and which one set the ceiling, and
+warns when they differ, because that means an OCLP update was started but not
+finished.
 
 When OCLP is detected, the script:
 
-- Holds back any macOS release newer than the installed OCLP version supports,
-  even with `--allow-major-upgrade`, and holds back every major upgrade when
-  the OCLP version cannot be read at all.
+- Holds back any macOS release newer than its oldest OCLP component supports,
+  even with `--allow-major-upgrade`, and holds back every upgrade past macOS 15
+  when the OCLP version cannot be confirmed.
 - Warns that OCLP itself should be updated before macOS updates are installed, so that the installed version supports the release being applied.
 - Prints a reminder after installing a macOS update that root patches are removed by macOS updates and must be re-applied in OpenCore Legacy Patcher after the restart.
 

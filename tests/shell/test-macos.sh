@@ -90,12 +90,14 @@ test_held_back_reasons_name_the_real_limit() {
     local reason
     MACOS_MAJOR=15; MAX_MACOS_MAJOR=26; ALLOW_MAJOR_UPGRADE=1
     OCLP_DETECTED=1; OCLP_VERSION=3.0.0; MAX_MACOS_MAJOR_EXPLICIT=0
+    OCLP_VERSION_SOURCE='the active bootloader'
     reason="$(should_install_update 'macOS Next' 27.0 'macOS Next label')"
-    assert_contains "$reason" 'OpenCore Legacy Patcher 3.0.0 supports macOS up to 26' || return 1
+    assert_contains "$reason" 'OpenCore Legacy Patcher 3.0.0, set by the active bootloader, supports macOS up to 26' || return 1
 
     OCLP_VERSION=
+    OCLP_VERSION_SOURCE='the active bootloader version could not be read from NVRAM'
     reason="$(should_install_update 'macOS Next' 27.0 'macOS Next label')"
-    assert_contains "$reason" 'version is unknown' || return 1
+    assert_contains "$reason" 'could not be confirmed (the active bootloader version could not be read from NVRAM)' || return 1
 
     MAX_MACOS_MAJOR_EXPLICIT=1
     reason="$(should_install_update 'macOS Next' 27.0 'macOS Next label')"
@@ -137,35 +139,163 @@ test_ceiling_comes_from_the_oclp_version() {
     assert_equal 27 "$MAX_MACOS_MAJOR"
 }
 
-test_oclp_version_is_read_from_the_best_source() {
+# Replace the three OCLP component readers with fixed answers. An empty
+# argument makes that component unreadable.
+mock_oclp_components() {
+    MOCK_OCLP_APP="$1"; MOCK_OCLP_BOOTLOADER="$2"; MOCK_OCLP_ROOT_PATCH="$3"
+    # Invoked indirectly through detect_oclp_version.
+    # shellcheck disable=SC2317
     oclp_bundle_version() {
-        [[ "$1" == '/Applications/OpenCore-Patcher.app' ]] || return 1
-        printf '3.0.1\n'
+        [[ "$1" == '/Applications/OpenCore-Patcher.app' && -n "$MOCK_OCLP_APP" ]] || return 1
+        printf '%s\n' "$MOCK_OCLP_APP"
     }
-    OCLP_VERSION=; OCLP_VERSION_SOURCE=
-    detect_oclp_version || return 1
-    assert_equal 3.0.1 "$OCLP_VERSION" || return 1
-    assert_equal '/Applications/OpenCore-Patcher.app' "$OCLP_VERSION_SOURCE" || return 1
+    # shellcheck disable=SC2317
+    oclp_bootloader_version() {
+        [[ -n "$MOCK_OCLP_BOOTLOADER" ]] || return 1
+        printf '%s\n' "$MOCK_OCLP_BOOTLOADER"
+    }
+    # The real property list stores the value with a leading "v".
+    # shellcheck disable=SC2317
+    oclp_root_patch_version() {
+        [[ -n "$MOCK_OCLP_ROOT_PATCH" ]] || return 1
+        printf 'v%s\n' "$MOCK_OCLP_ROOT_PATCH"
+    }
+}
 
-    oclp_bundle_version() { return 1; }
-    oclp_root_patch_version() { printf '  "OpenCore Legacy Patcher" => "2.5.1"\n'; }
-    OCLP_VERSION=; OCLP_VERSION_SOURCE=
+test_version_comparison() {
+    version_is_older 2.5.1 3.0.0 || return 1
+    version_is_older 3.0.0 3.0.1 || return 1
+    version_is_older 2.9 2.10 || return 1
+    version_is_older 3.0.0 2.5.1 && return 1
+    version_is_older 3.0 3.0.0 && return 1
+    version_is_older 3.0.0 3.0 && return 1
+    version_is_older 10.0 9.9 && return 1
+    return 0
+}
+
+# Review finding: the root patch property list also holds "OS Version" and
+# "PatcherSupportPkg", and `plutil -p` sorts "OS Version" first. Reading any
+# key but the exact one turned OCLP 2.5.1 into "15.7.1", whose major version
+# of 15 then unlocked macOS 26.
+test_root_patch_version_reads_only_the_exact_key() {
+    local requested=""
+    oclp_root_patch_plist_readable() { return 0; }
+    run_system_command() {
+        # The script sets IFS to newline and tab, so join the words explicitly.
+        local IFS=' '
+        requested="$*"
+        case "$requested" in
+            "defaults read /System/Library/CoreServices/OpenCore-Legacy-Patcher OpenCore Legacy Patcher")
+                printf 'v2.5.1\n' ;;
+            plutil*)
+                printf '{\n  "Commit URL" => "x"\n  "OS Version" => "15.7.1 (24G231)"\n'
+                printf '  "OpenCore Legacy Patcher" => "v2.5.1"\n  "PatcherSupportPkg" => "v1.9.6"\n}\n' ;;
+            *)
+                printf '15.7.1\n' ;;
+        esac
+    }
+    oclp_root_patch_version >/dev/null
+    assert_equal 'defaults read /System/Library/CoreServices/OpenCore-Legacy-Patcher OpenCore Legacy Patcher' \
+        "$requested" || return 1
+    assert_equal 2.5.1 "$(oclp_root_patch_version | first_version_in)" || return 1
+
+    # A missing key yields no version rather than another key's value.
+    run_system_command() { return 1; }
+    assert_equal '' "$(oclp_root_patch_version | first_version_in)" || return 1
+
+    # The reviewer's scenario end to end: no application, a 2.5.1 bootloader,
+    # and a root patch list. The ceiling must stay at macOS 15.
+    mock_oclp_components '' 2.5.1 2.5.1
+    OCLP_DETECTED=1; MAX_MACOS_MAJOR=; MAX_MACOS_MAJOR_EXPLICIT=0
+    detect_oclp_version && return 1
+    resolve_macos_ceiling
+    assert_equal 15 "$MAX_MACOS_MAJOR"
+}
+
+test_bootloader_version_is_the_nvram_value() {
+    oclp_nvram_present() { return 0; }
+    run_system_command() {
+        printf '4D1FDA02-38C7-4A6A-9CC6-4BCCA8B30102:OCLP-Version\t2.5.1\n'
+    }
+    assert_equal 2.5.1 "$(oclp_bootloader_version | first_version_in)" || return 1
+
+    # Output without the name-tab-value shape is not trusted.
+    run_system_command() { printf 'unexpected 3.0.0\n'; }
+    assert_equal '' "$(oclp_bootloader_version | first_version_in)" || return 1
+
+    oclp_nvram_present() { return 1; }
+    oclp_bootloader_version && return 1
+    return 0
+}
+
+# Review finding: OCLP updates the application, the bootloader and the root
+# patches as three separate steps. A 3.x application over a 2.5.x bootloader
+# must not unlock macOS 26, so the oldest component decides.
+test_oldest_oclp_component_sets_the_version() {
+    local reason
+    OCLP_DETECTED=1; MACOS_MAJOR=15; ALLOW_MAJOR_UPGRADE=1; MAX_MACOS_MAJOR_EXPLICIT=0
+
+    mock_oclp_components 3.0.1 2.5.1 3.0.1
     detect_oclp_version || return 1
     assert_equal 2.5.1 "$OCLP_VERSION" || return 1
+    assert_equal 'the active bootloader' "$OCLP_VERSION_SOURCE" || return 1
+    assert_equal '/Applications/OpenCore-Patcher.app' "$OCLP_APP_SOURCE" || return 1
+    oclp_components_differ || return 1
+    MAX_MACOS_MAJOR=; resolve_macos_ceiling
+    assert_equal 15 "$MAX_MACOS_MAJOR" || return 1
+    reason="$(should_install_update 'macOS Tahoe 26.0' 26.0 'macOS Tahoe 26.0-25A354')" && return 1
+    assert_contains "$reason" 'set by the active bootloader' || return 1
 
-    oclp_root_patch_version() { return 1; }
-    oclp_nvram_version() {
-        printf '4D1FDA02-38C7-4A6A-9CC6-4BCCA8B30102:OCLP-Version\t2.1.2\n'
-    }
-    OCLP_VERSION=; OCLP_VERSION_SOURCE=
+    # Root patches still from 2.5.1 after updating the app and the bootloader.
+    mock_oclp_components 3.0.0 3.0.0 2.5.1
     detect_oclp_version || return 1
-    assert_equal 2.1.2 "$OCLP_VERSION" || return 1
-    assert_contains "$OCLP_VERSION_SOURCE" 'NVRAM' || return 1
+    assert_equal 2.5.1 "$OCLP_VERSION" || return 1
+    assert_equal 'the root patches' "$OCLP_VERSION_SOURCE" || return 1
 
-    oclp_nvram_version() { return 1; }
-    OCLP_VERSION=; OCLP_VERSION_SOURCE=
+    # An application older than the bootloader limits it just the same.
+    mock_oclp_components 2.5.1 3.0.0 ''
+    detect_oclp_version || return 1
+    assert_equal 2.5.1 "$OCLP_VERSION" || return 1
+    assert_equal 'the application' "$OCLP_VERSION_SOURCE" || return 1
+
+    # Only a fully updated 3.x installation unlocks macOS 26.
+    mock_oclp_components 3.0.1 3.0.0 3.0.0
+    detect_oclp_version || return 1
+    assert_equal 3.0.0 "$OCLP_VERSION" || return 1
+    MAX_MACOS_MAJOR=; resolve_macos_ceiling
+    assert_equal 26 "$MAX_MACOS_MAJOR" || return 1
+    should_install_update 'macOS Tahoe 26.0' 26.0 'macOS Tahoe 26.0-25A354' >/dev/null || return 1
+
+    # Matching versions are not reported as a partial update; a Mac that has
+    # never needed root patches records none.
+    mock_oclp_components 3.0.0 3.0.0 ''
+    detect_oclp_version || return 1
+    oclp_components_differ && return 1
+    return 0
+}
+
+test_oclp_version_needs_the_bootloader_and_the_application() {
+    local reason
+    OCLP_DETECTED=1; MACOS_MAJOR=15; ALLOW_MAJOR_UPGRADE=1; MAX_MACOS_MAJOR_EXPLICIT=0
+
+    mock_oclp_components 3.0.1 '' 3.0.1
     detect_oclp_version && return 1
-    assert_equal '' "$OCLP_VERSION"
+    assert_equal '' "$OCLP_VERSION" || return 1
+    assert_contains "$OCLP_VERSION_SOURCE" 'bootloader' || return 1
+    MAX_MACOS_MAJOR=; resolve_macos_ceiling
+    assert_equal 15 "$MAX_MACOS_MAJOR" || return 1
+    reason="$(should_install_update 'macOS Tahoe 26.0' 26.0 'macOS Tahoe 26.0-25A354')" && return 1
+    assert_contains "$reason" 'could not be confirmed' || return 1
+
+    mock_oclp_components '' 3.0.0 3.0.0
+    detect_oclp_version && return 1
+    assert_contains "$OCLP_VERSION_SOURCE" 'application' || return 1
+    MAX_MACOS_MAJOR=; resolve_macos_ceiling
+    assert_equal 15 "$MAX_MACOS_MAJOR" || return 1
+
+    # The summary names every component, readable or not.
+    assert_equal 'application unreadable, active bootloader 3.0.0, root patches 3.0.0' \
+        "$(describe_oclp_components)"
 }
 
 test_apple_silicon_never_looks_for_oclp() {
@@ -331,7 +461,11 @@ run_test 'supported platform and root guards' test_platform_and_root_guards
 run_test 'complete macOS/OCLP release decision matrix' test_release_decision_matrix
 run_test 'held-back reasons name the real limit' test_held_back_reasons_name_the_real_limit
 run_test 'ceiling comes from the installed OCLP version' test_ceiling_comes_from_the_oclp_version
-run_test 'OCLP version read from the best available source' test_oclp_version_is_read_from_the_best_source
+run_test 'dotted versions compare numerically' test_version_comparison
+run_test 'root patch version comes from the exact plist key' test_root_patch_version_reads_only_the_exact_key
+run_test 'bootloader version is the NVRAM value' test_bootloader_version_is_the_nvram_value
+run_test 'oldest OCLP component sets the version' test_oldest_oclp_component_sets_the_version
+run_test 'OCLP version needs the bootloader and the application' test_oclp_version_needs_the_bootloader_and_the_application
 run_test 'Apple silicon never looks for OCLP' test_apple_silicon_never_looks_for_oclp
 run_test 'no OCLP means no OCLP or ceiling in the output' test_without_oclp_nothing_mentions_it
 run_test 'OCLP filesystem, NVRAM, and device-tree evidence' test_oclp_detection_evidence

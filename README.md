@@ -299,7 +299,7 @@ installed OCLP version sets a ceiling:
 |---|---|
 | 3.x and newer | macOS 26 Tahoe |
 | 2.5.x and older | macOS 15 Sequoia |
-| Version unreadable | macOS 15 Sequoia, assumed |
+| Version not confirmed | macOS 15 Sequoia, assumed |
 
 macOS has no releases 16 to 25, so the supported numbers jump from 15 straight
 to 26. An OCLP generation newer than 3.x keeps the macOS 26 ceiling until it
@@ -329,12 +329,16 @@ Apple silicon never looks for it.
 
 When OCLP is detected, the script:
 
-- Reads the installed OCLP version, preferring the version of the installed
-  application over the version recorded by an earlier root patch or boot,
-  and uses it to decide the newest macOS release it may install.
+- Reads the version of each OCLP component separately — the application, the
+  active bootloader from the `OCLP-Version` NVRAM variable, and the root
+  patches from the exact `OpenCore Legacy Patcher` key of their property list —
+  because OCLP updates them in three separate steps. The **oldest** component
+  decides the newest macOS release it may install.
 - Refuses any major upgrade beyond that release, even with
-  `--allow-major-upgrade`, and refuses every major upgrade when the OCLP
-  version cannot be read.
+  `--allow-major-upgrade`, and refuses every upgrade past macOS 15 unless both
+  the active bootloader and the application versions can be read.
+- Warns when the components are at different versions, which means an OCLP
+  update was started but not finished.
 - Warns that OCLP itself should be updated first, so that the installed version supports the release being applied.
 - Prints a reminder after installing a macOS update that root patches must be re-applied in OpenCore Legacy Patcher after the restart.
 

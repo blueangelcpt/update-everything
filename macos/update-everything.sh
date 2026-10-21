@@ -58,8 +58,21 @@ ARCHITECTURE=""
 
 OCLP_DETECTED=0
 OCLP_EVIDENCE=""
+# OCLP is updated in three separate steps -- the application, then the EFI
+# bootloader, then the root patches -- so each can be at a different version.
+OCLP_APP_VERSION=""
+OCLP_APP_SOURCE=""
+OCLP_BOOTLOADER_VERSION=""
+OCLP_ROOT_PATCH_VERSION=""
+# The effective version is the oldest of the components above, and is empty
+# when the application or the active bootloader could not be read. The source
+# names the component that set it, or says why it is unknown.
 OCLP_VERSION=""
 OCLP_VERSION_SOURCE=""
+
+readonly OCLP_NVRAM_VARIABLE="4D1FDA02-38C7-4A6A-9CC6-4BCCA8B30102:OCLP-Version"
+readonly OCLP_ROOT_PATCH_PLIST="/System/Library/CoreServices/OpenCore-Legacy-Patcher.plist"
+readonly OCLP_ROOT_PATCH_KEY="OpenCore Legacy Patcher"
 
 MACOS_UPDATE_INSTALLED=0
 RESTART_REQUIRED=0
@@ -297,7 +310,7 @@ oclp_path_exists() {
 
 oclp_nvram_present() {
     find_system_command nvram >/dev/null &&
-        run_system_command nvram 4D1FDA02-38C7-4A6A-9CC6-4BCCA8B30102:OCLP-Version >/dev/null 2>&1
+        run_system_command nvram "$OCLP_NVRAM_VARIABLE" >/dev/null 2>&1
 }
 
 oclp_device_tree_present() {
@@ -319,7 +332,7 @@ detect_oclp() {
     # treated as independent evidence rather than as a requirement.
     local path
     for path in \
-        "/System/Library/CoreServices/OpenCore-Legacy-Patcher.plist" \
+        "$OCLP_ROOT_PATCH_PLIST" \
         "/System/Library/CoreServices/OpenCore-Patcher.app" \
         "/Library/Application Support/Dortania" \
         "/Applications/OpenCore-Patcher.app"; do
@@ -340,14 +353,32 @@ detect_oclp() {
     (( OCLP_DETECTED ))
 }
 
-# Print the first version-looking token in the input, so that one helper reads
-# a bundle version, a property list dump, or an NVRAM value alike.
+# Print the first version-looking token in the input. Each reader below hands
+# it a single value, never a listing of several, so the token it finds cannot
+# belong to a different field.
 first_version_in() {
     awk '{
         if (match($0, /[0-9]+\.[0-9]+(\.[0-9]+)*/)) {
             print substr($0, RSTART, RLENGTH)
             exit
         }
+    }'
+}
+
+# Succeed when version $1 is older than version $2. Each dotted component is
+# compared as a number, so 2.10 is newer than 2.9 and 3.0 equals 3.0.0.
+version_is_older() {
+    awk -v a="$1" -v b="$2" 'BEGIN {
+        n = split(a, x, ".")
+        m = split(b, y, ".")
+        k = (n > m) ? n : m
+        for (i = 1; i <= k; i++) {
+            xi = (i <= n) ? x[i] + 0 : 0
+            yi = (i <= m) ? y[i] + 0 : 0
+            if (xi < yi) exit 0
+            if (xi > yi) exit 1
+        }
+        exit 1
     }'
 }
 
@@ -358,56 +389,101 @@ oclp_bundle_version() {
     run_system_command defaults read "$bundle/Contents/Info" CFBundleShortVersionString 2>/dev/null
 }
 
+oclp_root_patch_plist_readable() {
+    [[ -r "$OCLP_ROOT_PATCH_PLIST" ]]
+}
+
+# The root patch property list also records the patched macOS version and the
+# PatcherSupportPkg version, and `plutil -p` lists keys alphabetically, which
+# puts "OS Version" before "OpenCore Legacy Patcher". Only the value of that
+# exact key is read. `defaults` takes the path without its .plist extension,
+# and the value carries a leading "v", as in "v2.5.1".
 oclp_root_patch_version() {
-    local plist="/System/Library/CoreServices/OpenCore-Legacy-Patcher.plist"
-
-    [[ -r "$plist" ]] || return 1
-
-    # The keys in this file have changed between OCLP releases, so only the
-    # lines that name a patcher or a version are searched for a number.
-    run_system_command plutil -p "$plist" 2>/dev/null |
-        awk 'tolower($0) ~ /patcher|version/'
+    oclp_root_patch_plist_readable || return 1
+    run_system_command defaults read "${OCLP_ROOT_PATCH_PLIST%.plist}" "$OCLP_ROOT_PATCH_KEY" 2>/dev/null
 }
 
-oclp_nvram_version() {
+# OCLP writes its own version into the EFI configuration when it builds the
+# bootloader, so this NVRAM variable reports the bootloader the Mac actually
+# booted through. Installing a newer application does not change it. `nvram`
+# prints the variable name, a tab, then the value; only the value is returned.
+oclp_bootloader_version() {
+    local line
+
     oclp_nvram_present || return 1
-    run_system_command nvram 4D1FDA02-38C7-4A6A-9CC6-4BCCA8B30102:OCLP-Version 2>/dev/null
+    line="$(run_system_command nvram "$OCLP_NVRAM_VARIABLE" 2>/dev/null)" || return 1
+    [[ "$line" == *$'\t'* ]] || return 1
+    printf '%s\n' "${line#*$'\t'}"
 }
 
-# The installed OCLP version decides which macOS releases this Mac may be
-# upgraded to, so it is read from the most authoritative source available.
+# Read the version of each OCLP component, then settle on the effective one.
+# OCLP is updated as three separate steps -- the application, the bootloader,
+# then the root patches -- and a Mac is only as capable as the step it has not
+# taken yet, so the oldest component sets the version. The active bootloader
+# and the application must both be readable: the Mac boots through the first,
+# and only the second can re-apply root patches after an upgrade.
 detect_oclp_version() {
-    local bundle candidate
+    local bundle
 
-    # The installed application decides what OCLP can do now, so it is read
-    # before the versions recorded by an earlier root patch or boot.
+    OCLP_APP_VERSION=""
+    OCLP_APP_SOURCE=""
     for bundle in \
         "/Applications/OpenCore-Patcher.app" \
         "/System/Library/CoreServices/OpenCore-Patcher.app"; do
-        candidate="$(oclp_bundle_version "$bundle" | first_version_in)"
-        if [[ -n "$candidate" ]]; then
-            OCLP_VERSION="$candidate"
-            OCLP_VERSION_SOURCE="$bundle"
-            return 0
+        OCLP_APP_VERSION="$(oclp_bundle_version "$bundle" | first_version_in)"
+        if [[ -n "$OCLP_APP_VERSION" ]]; then
+            OCLP_APP_SOURCE="$bundle"
+            break
         fi
     done
 
-    candidate="$(oclp_root_patch_version | first_version_in)"
-    if [[ -n "$candidate" ]]; then
-        OCLP_VERSION="$candidate"
-        OCLP_VERSION_SOURCE="the root patch property list"
-        return 0
-    fi
-
-    candidate="$(oclp_nvram_version | first_version_in)"
-    if [[ -n "$candidate" ]]; then
-        OCLP_VERSION="$candidate"
-        OCLP_VERSION_SOURCE="the OCLP-Version NVRAM variable"
-        return 0
-    fi
+    OCLP_BOOTLOADER_VERSION="$(oclp_bootloader_version | first_version_in)"
+    OCLP_ROOT_PATCH_VERSION="$(oclp_root_patch_version | first_version_in)"
 
     OCLP_VERSION=""
-    OCLP_VERSION_SOURCE=""
+    if [[ -z "$OCLP_BOOTLOADER_VERSION" ]]; then
+        OCLP_VERSION_SOURCE="the active bootloader version could not be read from NVRAM"
+        return 1
+    fi
+    if [[ -z "$OCLP_APP_VERSION" ]]; then
+        OCLP_VERSION_SOURCE="no installed OpenCore Legacy Patcher application could be read"
+        return 1
+    fi
+
+    OCLP_VERSION="$OCLP_BOOTLOADER_VERSION"
+    OCLP_VERSION_SOURCE="the active bootloader"
+    if version_is_older "$OCLP_APP_VERSION" "$OCLP_VERSION"; then
+        OCLP_VERSION="$OCLP_APP_VERSION"
+        OCLP_VERSION_SOURCE="the application"
+    fi
+    if [[ -n "$OCLP_ROOT_PATCH_VERSION" ]] &&
+        version_is_older "$OCLP_ROOT_PATCH_VERSION" "$OCLP_VERSION"; then
+        OCLP_VERSION="$OCLP_ROOT_PATCH_VERSION"
+        OCLP_VERSION_SOURCE="the root patches"
+    fi
+    return 0
+}
+
+describe_oclp_components() {
+    printf 'application %s, active bootloader %s, root patches %s' \
+        "${OCLP_APP_VERSION:-unreadable}" \
+        "${OCLP_BOOTLOADER_VERSION:-unreadable}" \
+        "${OCLP_ROOT_PATCH_VERSION:-none recorded}"
+}
+
+# Succeed when the components that could be read are not all the same version,
+# which means an OCLP update was started but not finished.
+oclp_components_differ() {
+    local reference="" component
+
+    for component in "$OCLP_APP_VERSION" "$OCLP_BOOTLOADER_VERSION" "$OCLP_ROOT_PATCH_VERSION"; do
+        [[ -n "$component" ]] || continue
+        if [[ -z "$reference" ]]; then
+            reference="$component"
+        elif version_is_older "$component" "$reference" || version_is_older "$reference" "$component"; then
+            return 0
+        fi
+    done
     return 1
 }
 
@@ -441,9 +517,9 @@ report_macos_ceiling() {
 
     if (( OCLP_DETECTED && ! MAX_MACOS_MAJOR_EXPLICIT )); then
         if [[ -n "$OCLP_VERSION" ]]; then
-            info "OpenCore Legacy Patcher $OCLP_VERSION supports macOS up to $MAX_MACOS_MAJOR, which is the ceiling for this run."
+            info "OpenCore Legacy Patcher $OCLP_VERSION, set by $OCLP_VERSION_SOURCE, supports macOS up to $MAX_MACOS_MAJOR, which is the ceiling for this run."
         else
-            warn "The OpenCore Legacy Patcher version is unknown, so macOS $MAX_MACOS_MAJOR is assumed as the ceiling. Override it with --max-macos-major."
+            warn "The OpenCore Legacy Patcher version could not be confirmed ($OCLP_VERSION_SOURCE), so macOS $MAX_MACOS_MAJOR is assumed as the ceiling. Override it with --max-macos-major."
         fi
     fi
 
@@ -555,11 +631,11 @@ should_install_update() {
     if [[ -n "$MAX_MACOS_MAJOR" ]] && (( major > MAX_MACOS_MAJOR )); then
         if (( OCLP_DETECTED && ! MAX_MACOS_MAJOR_EXPLICIT )); then
             if [[ -n "$OCLP_VERSION" ]]; then
-                printf 'OpenCore Legacy Patcher %s supports macOS up to %s, not macOS %s' \
-                    "$OCLP_VERSION" "$MAX_MACOS_MAJOR" "$major"
+                printf 'OpenCore Legacy Patcher %s, set by %s, supports macOS up to %s, not macOS %s' \
+                    "$OCLP_VERSION" "$OCLP_VERSION_SOURCE" "$MAX_MACOS_MAJOR" "$major"
             else
-                printf 'the OpenCore Legacy Patcher version is unknown, so macOS %s is the assumed maximum' \
-                    "$MAX_MACOS_MAJOR"
+                printf 'the OpenCore Legacy Patcher version could not be confirmed (%s), so macOS %s is the assumed maximum' \
+                    "$OCLP_VERSION_SOURCE" "$MAX_MACOS_MAJOR"
             fi
         else
             printf 'macOS %s is above the configured maximum of macOS %s' "$major" "$MAX_MACOS_MAJOR"
@@ -776,9 +852,10 @@ print_summary() {
     # has neither of them.
     if (( OCLP_DETECTED )); then
         if [[ -n "$OCLP_VERSION" ]]; then
-            printf 'OpenCore Legacy Patcher: %s (%s)\n' "$OCLP_VERSION" "$OCLP_EVIDENCE"
+            printf 'OpenCore Legacy Patcher: %s, set by %s (%s)\n' \
+                "$OCLP_VERSION" "$OCLP_VERSION_SOURCE" "$(describe_oclp_components)"
         else
-            printf 'OpenCore Legacy Patcher: detected, version unknown (%s)\n' "$OCLP_EVIDENCE"
+            printf 'OpenCore Legacy Patcher: detected, version not confirmed (%s)\n' "$(describe_oclp_components)"
         fi
     fi
 
@@ -907,10 +984,12 @@ main() {
     # ceiling unless one was asked for explicitly.
     if detect_oclp; then
         detect_oclp_version
-        if [[ -n "$OCLP_VERSION" ]]; then
-            info "OpenCore Legacy Patcher $OCLP_VERSION detected from $OCLP_VERSION_SOURCE; evidence: $OCLP_EVIDENCE"
-        else
-            info "OpenCore Legacy Patcher detected, but its version could not be read; evidence: $OCLP_EVIDENCE"
+        info "OpenCore Legacy Patcher detected: $(describe_oclp_components); evidence: $OCLP_EVIDENCE"
+        if [[ -n "$OCLP_APP_SOURCE" ]]; then
+            info "OpenCore Legacy Patcher application version read from $OCLP_APP_SOURCE"
+        fi
+        if oclp_components_differ; then
+            warn "OpenCore Legacy Patcher is only partly updated. It updates the application, the bootloader and the root patches as three separate steps; finish all three before a major macOS upgrade."
         fi
         warn "Root patches are removed by a macOS update and must be re-applied in OpenCore Legacy Patcher afterwards."
         warn "Update OpenCore Legacy Patcher itself first, so that the installed version supports the release being applied."
