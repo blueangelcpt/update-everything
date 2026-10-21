@@ -17,6 +17,24 @@ All notable changes are documented here. The project uses one repository-wide
   escape sequences. The banner replaces the plain `update-everything <version>`
   line printed at the start of a run.
 - Publish the project website on GitHub Pages from the `gh-pages` branch.
+- Add `-PatchMyPCTimeoutMinutes` to the Windows script, 60 by default and
+  accepted from 1 to 1440. A Patch My PC Home Updater still running after it
+  is left running in the background, never stopped, and the step is reported
+  as failed while the remaining updaters continue.
+- Add a "Held back" section to the Windows summary, matching Linux and macOS.
+  Held-back items do not change the exit code.
+
+### Fixed
+
+- Stop the Windows script hanging at the Patch My PC step. It waited with
+  `Start-Process -Wait`, which waits for every process Patch My PC starts, so
+  an updated application that relaunched itself kept the script waiting until
+  it was closed. The script now waits for Patch My PC alone.
+- Hold Patch My PC back, without starting it, while a web browser window is
+  open, because its silent mode waits until every browser is closed. The
+  summary asks for the browsers to be closed and the script run again. A dry
+  run reports which would happen. Browsers running only in the background
+  produce a warning instead.
 
 ## [2.1.0] - 2026-10-21
 
