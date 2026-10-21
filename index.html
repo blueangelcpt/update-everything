@@ -1,0 +1,450 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Update Everything</title>
+<meta name="description" content="One command installs every update on Linux, macOS and Windows. It never reboots. Everything, carefully.">
+<meta name="theme-color" content="#0B0F14">
+<meta property="og:type" content="website">
+<meta property="og:title" content="Update Everything">
+<meta property="og:description" content="One command installs every update on Linux, macOS and Windows. It never reboots. Everything, carefully.">
+<meta property="og:url" content="https://blueangelcpt.github.io/update-everything/">
+<link rel="icon" type="image/svg+xml" href="favicon.svg">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+:root{--bg:#0B0F14;--panel:#111821;--line:#1F2937;--line2:#2A3441;--text:#E5E7EB;--bright:#F9FAFB;--muted:#9CA3AF;--dim:#6B7280;--faint:#4B5563;--green:#22C55E;--blue:#3B82F6;--mono:'JetBrains Mono',ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+html{scroll-behavior:smooth}
+body{margin:0;background:var(--bg);color:var(--text);font-family:'Inter',system-ui,-apple-system,'Segoe UI',sans-serif;-webkit-font-smoothing:antialiased}
+*{box-sizing:border-box}
+a{color:var(--text);text-decoration:none}
+a:hover{color:var(--green)}
+.mono{font-family:var(--mono)}
+.wrap{max-width:1240px;margin:0 auto}
+.nav-link{color:var(--muted)}
+.nav-link:hover{color:var(--text)}
+.nav-gh{color:var(--text);border:1px solid var(--line);padding:8px 14px;border-radius:8px;font-family:var(--mono);font-size:13px;background:rgba(11,15,20,0.6)}
+.nav-gh:hover{border-color:var(--green);color:var(--text)}
+.btn-primary{background:var(--green);color:var(--bg);font-weight:600;font-size:15px;padding:12px 18px;border-radius:8px}
+.btn-primary:hover{background:#4ADE80;color:var(--bg)}
+.btn-ghost{border:1px solid var(--line2);color:var(--text);font-weight:500;font-size:15px;padding:12px 18px;border-radius:8px;background:rgba(11,15,20,0.5)}
+.btn-ghost:hover{border-color:var(--blue);color:var(--text)}
+.chip{cursor:pointer;border:1px solid var(--line2);background:var(--bg);color:var(--text);font-family:var(--mono);font-size:12px;padding:6px 10px;border-radius:6px}
+.chip:hover{border-color:var(--green)}
+.tab{border:0;cursor:pointer;font-family:var(--mono);font-size:14px;padding:9px 16px;border-radius:7px;background:transparent;color:var(--muted)}
+.tab[aria-selected="true"]{background:var(--line);color:var(--bright)}
+.eyebrow{font-family:var(--mono);font-size:13px;letter-spacing:0.18em}
+h2{margin:0;font-size:clamp(32px,3.6vw,48px);line-height:1.05;letter-spacing:-0.03em;font-weight:700;text-wrap:pretty}
+.feature{display:flex;gap:16px;align-items:center;padding:32px}
+.feature+.feature{border-left:1px solid var(--line)}
+.feature-title{font-weight:600;font-size:16px}
+.feature-sub{font-size:14px;color:var(--muted);margin-top:2px}
+.term-line{display:grid;grid-template-columns:34px 150px minmax(0,1fr);white-space:nowrap}
+.cursor{display:inline-block;width:8px;height:16px;background:var(--green);margin-top:4px}
+.platform-card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:28px;display:flex;flex-direction:column;gap:16px}
+.platform-name{font-size:22px;font-weight:700;letter-spacing:-0.02em}
+.platform-card code{font-family:var(--mono);font-size:13px;color:var(--muted)}
+.platform-card p{margin:0;font-size:15px;line-height:1.6;color:#D1D5DB}
+.switch{cursor:pointer;width:42px;height:24px;border-radius:12px;border:0;padding:3px;background:#374151;display:flex;justify-content:flex-start}
+.switch[aria-checked="true"]{background:var(--green);justify-content:flex-end}
+.switch span{width:18px;height:18px;border-radius:9px;background:var(--bright);display:block}
+:focus-visible{outline:2px solid var(--green);outline-offset:2px}
+@media (max-width:700px){
+  .feature+.feature{border-left:0;border-top:1px solid var(--line)}
+  .term-line{grid-template-columns:30px 120px minmax(0,1fr)}
+  .pad{padding-left:16px!important;padding-right:16px!important}
+}
+</style>
+</head>
+<body>
+<header style="position:relative;overflow:hidden;background:radial-gradient(ellipse 90% 70% at 25% 0%, #12203A 0%, #0B0F14 62%);min-height:min(820px,100vh);display:flex;flex-direction:column">
+  <canvas id="waves" aria-hidden="true" style="position:absolute;left:0;right:0;bottom:0;width:100%;height:58%;display:block;-webkit-mask-image:linear-gradient(to bottom,transparent 0%,#000 28%);mask-image:linear-gradient(to bottom,transparent 0%,#000 28%)"></canvas>
+  <nav class="pad" style="position:relative;z-index:2;max-width:1240px;width:100%;margin:0 auto;padding:24px 32px;display:flex;align-items:center;justify-content:space-between;gap:24px;flex-wrap:wrap">
+    <a href="#top" style="display:flex;align-items:center;gap:10px;color:var(--text)">
+      <svg viewBox="0 0 100 100" width="30" height="30" aria-hidden="true"><defs><linearGradient id="nG" x1="0" y1="1" x2="0" y2="0"><stop offset="0" stop-color="#22C55E"/><stop offset="1" stop-color="#34D399"/></linearGradient><linearGradient id="nS" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#D1D5DB"/><stop offset="1" stop-color="#9CA3AF"/></linearGradient></defs><g fill="none" stroke-width="15"><path d="M18.13 29.31 A38 38 0 0 1 48.01 12.05" stroke="#60A5FA"/><path d="M51.99 12.05 A38 38 0 0 1 81.87 29.31" stroke="#3B82F6"/><path d="M83.86 32.75 A38 38 0 0 1 51.99 87.95" stroke="url(#nS)"/><path d="M48.01 87.95 A38 38 0 0 1 16.14 32.75" stroke="url(#nG)"/></g><path d="M34 51 L45 62 L66 40" fill="none" stroke="#22C55E" stroke-width="10" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      <span style="font-weight:700;font-size:16px;letter-spacing:-0.02em">Update Everything</span>
+    </a>
+    <div style="display:flex;align-items:center;gap:28px;font-size:14px;flex-wrap:wrap">
+      <a href="#try" class="nav-link">Try it</a>
+      <a href="#restraint" class="nav-link">What it won’t do</a>
+      <a href="#platforms" class="nav-link">Platforms</a>
+      <a href="https://github.com/blueangelcpt/update-everything" class="nav-gh">GitHub ↗</a>
+    </div>
+  </nav>
+  <div id="top" class="pad" style="position:relative;z-index:2;max-width:1240px;width:100%;margin:0 auto;padding:clamp(48px,9vh,110px) 32px 0;display:flex;flex-wrap:wrap;align-items:center;gap:48px 56px">
+    <div style="display:flex;align-items:center;gap:clamp(20px,3vw,36px);flex:1 1 min(100%,560px);flex-wrap:wrap">
+      <svg viewBox="0 0 100 100" role="img" aria-label="Update Everything logo" style="width:clamp(110px,15vw,200px);flex:none;filter:drop-shadow(0 10px 40px rgba(34,197,94,0.18))"><defs><linearGradient id="hG" x1="0" y1="1" x2="0" y2="0"><stop offset="0" stop-color="#22C55E"/><stop offset="1" stop-color="#34D399"/></linearGradient><linearGradient id="hS" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#D1D5DB"/><stop offset="1" stop-color="#9CA3AF"/></linearGradient></defs><g fill="none" stroke-width="15"><path d="M18.13 29.31 A38 38 0 0 1 48.01 12.05" stroke="#60A5FA"/><path d="M51.99 12.05 A38 38 0 0 1 81.87 29.31" stroke="#3B82F6"/><path d="M83.86 32.75 A38 38 0 0 1 51.99 87.95" stroke="url(#hS)"/><path d="M48.01 87.95 A38 38 0 0 1 16.14 32.75" stroke="url(#hG)"/></g><path d="M34 51 L45 62 L66 40" fill="none" stroke="#22C55E" stroke-width="10" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      <div style="display:flex;flex-direction:column;gap:clamp(10px,1.4vw,18px)">
+        <h1 style="margin:0;font-weight:800;font-size:clamp(52px,7.6vw,108px);line-height:0.9;letter-spacing:-0.045em;display:flex;flex-direction:column">
+          <span style="color:var(--bright)">Update</span>
+          <span style="background:linear-gradient(90deg,#22C55E,#5EE6B0);-webkit-background-clip:text;background-clip:text;color:transparent;padding-bottom:0.08em">Everything</span>
+        </h1>
+        <div class="mono" style="font-size:clamp(16px,1.8vw,24px);letter-spacing:0.14em;color:var(--text)">Everything, carefully.</div>
+      </div>
+    </div>
+    <div style="flex:0 1 380px;border-left:1px solid var(--line2);padding-left:clamp(24px,3vw,48px);display:flex;flex-direction:column;gap:18px">
+      <div class="mono" style="display:flex;align-items:center;gap:14px;font-size:15px">
+        <span style="color:var(--green)">Linux</span><span style="color:var(--faint)">•</span><span style="color:var(--text)">macOS</span><span style="color:var(--faint)">•</span><span style="color:var(--blue)">Windows</span>
+      </div>
+      <div style="font-size:clamp(22px,2.2vw,30px);line-height:1.25;font-weight:500;letter-spacing:-0.01em;color:var(--bright)">One command.<br>Every platform.<br>Everything, carefully.</div>
+      <div style="display:flex;gap:12px;flex-wrap:wrap;margin-top:8px">
+        <a href="#try" class="btn-primary">Get started</a>
+        <a href="https://github.com/blueangelcpt/update-everything" class="btn-ghost">View source</a>
+      </div>
+    </div>
+  </div>
+  <div style="flex:1;min-height:260px"></div>
+</header>
+
+<section style="border-top:1px solid var(--line);border-bottom:1px solid var(--line);background:var(--bg)">
+  <div class="wrap" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,240px),1fr))">
+    <div class="feature">
+      <svg viewBox="0 0 32 32" width="36" height="36" fill="none" aria-hidden="true"><path d="M16 3 L27 7 V15 C27 22 22 27 16 29 C10 27 5 22 5 15 V7 Z" stroke="#E5E7EB" stroke-width="2" stroke-linejoin="round"/><path d="M11 16 L14.5 19.5 L21 12.5" stroke="#22C55E" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      <div><div class="feature-title">Safe by default</div><div class="feature-sub">No automatic reboots</div></div>
+    </div>
+    <div class="feature">
+      <svg viewBox="0 0 32 32" width="36" height="36" fill="none" aria-hidden="true"><rect x="7" y="4" width="18" height="24" rx="2" stroke="#E5E7EB" stroke-width="2"/><path d="M11 11 H21 M11 15 H21 M11 19 H21 M11 23 H17" stroke="#E5E7EB" stroke-width="2" stroke-linecap="round"/><circle cx="21" cy="23" r="1.6" fill="#22C55E"/></svg>
+      <div><div class="feature-title">Transparent</div><div class="feature-sub">Clear, detailed reports</div></div>
+    </div>
+    <div class="feature">
+      <svg viewBox="0 0 32 32" width="36" height="36" fill="none" aria-hidden="true"><path d="M16 3 l2.2 3.4 3.9-1 .6 4 3.8 1.5-1.8 3.6 1.8 3.6-3.8 1.5-.6 4-3.9-1L16 26l-2.2-3.4-3.9 1-.6-4-3.8-1.5L7.3 14.5 5.5 10.9l3.8-1.5.6-4 3.9 1Z" stroke="#E5E7EB" stroke-width="2" stroke-linejoin="round" transform="translate(0 1.5)"/><circle cx="16" cy="16" r="4.2" stroke="#22C55E" stroke-width="2.4"/></svg>
+      <div><div class="feature-title">Flexible</div><div class="feature-sub">Dry-run, holds, and control</div></div>
+    </div>
+    <div class="feature">
+      <svg viewBox="0 0 32 32" width="36" height="36" fill="none" stroke="#E5E7EB" stroke-width="2" aria-hidden="true"><circle cx="16" cy="16" r="12"/><ellipse cx="16" cy="16" rx="5.5" ry="12"/><path d="M4 16 H28 M6 10 H26 M6 22 H26"/></svg>
+      <div><div class="feature-title">Cross-platform</div><div class="feature-sub">Linux, macOS, and Windows</div></div>
+    </div>
+  </div>
+</section>
+
+<section id="try" class="wrap pad" style="padding:112px 32px 96px;display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,460px),1fr));gap:56px;align-items:start">
+  <div style="display:flex;flex-direction:column;gap:28px;min-width:0">
+    <div class="eyebrow" style="color:var(--green)">TRY IT</div>
+    <h2>Run it once. Read what it did.</h2>
+    <p style="margin:0;font-size:17px;line-height:1.6;color:var(--muted);max-width:520px;text-wrap:pretty">Each platform has one standalone script. Start with a dry run: it shows what would happen and changes nothing.</p>
+    <div id="tabs" role="tablist" aria-label="Platform" style="display:flex;gap:4px;background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:4px;align-self:flex-start"></div>
+    <div style="background:var(--panel);border:1px solid var(--line);border-radius:12px;overflow:hidden">
+      <div style="display:flex;align-items:center;justify-content:space-between;padding:10px 12px 10px 18px;border-bottom:1px solid var(--line);gap:12px">
+        <span id="shell-name" class="mono" style="font-size:12px;color:var(--dim)"></span>
+        <button id="copy" type="button" class="chip">Copy</button>
+      </div>
+      <div id="cmd" class="mono" style="padding:18px;font-size:14px;line-height:1.75;overflow-x:auto;display:flex;flex-direction:column"></div>
+    </div>
+    <div style="display:flex;align-items:center;gap:12px;font-size:15px;color:var(--text);align-self:flex-start">
+      <button id="dry" type="button" role="switch" aria-checked="true" aria-labelledby="dry-label" class="switch"><span></span></button>
+      <span id="dry-label">Dry run <span style="color:var(--dim);font-size:14px">changes nothing</span></span>
+    </div>
+  </div>
+  <div style="background:#0E131A;border:1px solid var(--line);border-radius:12px;overflow:hidden;box-shadow:0 30px 80px rgba(0,0,0,0.45);min-width:0">
+    <div style="display:flex;align-items:center;gap:8px;padding:12px 14px;border-bottom:1px solid var(--line);background:var(--panel)">
+      <span style="width:11px;height:11px;border-radius:6px;background:#EF4444"></span><span style="width:11px;height:11px;border-radius:6px;background:#F59E0B"></span><span style="width:11px;height:11px;border-radius:6px;background:#22C55E"></span>
+      <span class="mono" style="font-size:12px;color:var(--dim);margin-left:8px;flex:1">update-everything</span>
+      <button id="run" type="button" class="chip" style="padding:5px 10px">↻ Run again</button>
+    </div>
+    <div id="term" class="mono" aria-live="polite" style="padding:22px 22px 26px;font-size:13.5px;line-height:1.8;min-height:360px;display:flex;flex-direction:column;overflow-x:auto"></div>
+  </div>
+</section>
+
+<section id="restraint" style="border-top:1px solid var(--line);background:linear-gradient(#0B0F14,#0D131B)">
+  <div class="wrap pad" style="padding:112px 32px;display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,380px),1fr));gap:56px">
+    <div style="display:flex;flex-direction:column;gap:24px">
+      <div class="eyebrow" style="color:var(--blue)">WHAT IT WON’T DO</div>
+      <h2>It updates everything, and knows when to stop.</h2>
+      <p style="margin:0;font-size:17px;line-height:1.6;color:var(--muted);max-width:460px;text-wrap:pretty">Many tools can run every updater. This one is defined by what it refuses to do.</p>
+    </div>
+    <ol id="rules" style="display:flex;flex-direction:column;list-style:none;margin:0;padding:0"></ol>
+  </div>
+</section>
+
+<section id="platforms" style="border-top:1px solid var(--line)">
+  <div class="wrap pad" style="padding:112px 32px;display:flex;flex-direction:column;gap:48px">
+    <div style="display:flex;flex-direction:column;gap:20px;max-width:640px">
+      <div class="eyebrow" style="color:var(--green)">PLATFORMS</div>
+      <h2>Three scripts. Equal on every system.</h2>
+    </div>
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,300px),1fr));gap:20px">
+      <div class="platform-card">
+        <div class="platform-name" style="color:var(--green)">Linux</div>
+        <code>linux/update-everything.sh</code>
+        <p>The distribution’s own package manager (16 supported, from APT to NixOS), then Snap, Flatpak and Homebrew.</p>
+      </div>
+      <div class="platform-card">
+        <div class="platform-name" style="color:var(--text)">macOS</div>
+        <code>macos/update-everything.sh</code>
+        <p>macOS system updates, then the Mac App Store, Homebrew, MacPorts and Nix.</p>
+      </div>
+      <div class="platform-card">
+        <div class="platform-name" style="color:var(--blue)">Windows</div>
+        <code>windows/update-everything.ps1</code>
+        <p>Windows Update, then WinGet, Chocolatey, Scoop, Patch My PC and the Microsoft Store.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<footer style="border-top:1px solid var(--line)">
+  <div class="wrap pad" style="padding:40px 32px;display:flex;justify-content:space-between;align-items:center;gap:24px;flex-wrap:wrap;font-size:14px;color:var(--dim)">
+    <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+      <svg viewBox="0 0 100 100" width="22" height="22" aria-hidden="true"><g fill="none" stroke-width="15"><path d="M18.13 29.31 A38 38 0 0 1 48.01 12.05" stroke="#60A5FA"/><path d="M51.99 12.05 A38 38 0 0 1 81.87 29.31" stroke="#3B82F6"/><path d="M83.86 32.75 A38 38 0 0 1 51.99 87.95" stroke="#9CA3AF"/><path d="M48.01 87.95 A38 38 0 0 1 16.14 32.75" stroke="#22C55E"/></g><path d="M34 51 L45 62 L66 40" fill="none" stroke="#22C55E" stroke-width="10" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      <span style="color:var(--text);font-weight:600">Update Everything</span><span>2.0.0 · GPL-3.0-or-later</span>
+    </div>
+    <div class="mono" style="display:flex;gap:24px;font-size:13px;overflow-wrap:anywhere">
+      <a href="https://github.com/blueangelcpt/update-everything" style="color:var(--muted)">github.com/blueangelcpt/update-everything</a>
+    </div>
+  </div>
+</footer>
+
+<script>
+(function () {
+  'use strict';
+
+  var CLONE = 'git clone https://github.com/blueangelcpt/update-everything.git';
+  var DATA = {
+    linux: {
+      label: 'Linux', shell: 'bash', prompt: '$', flag: ' --dry-run', join: ' && ',
+      cmd: [CLONE, 'cd update-everything', './linux/update-everything.sh'],
+      rows: [
+        ['ok', 'APT', '12 packages updated', '12 packages would be updated'],
+        ['hold', 'APT phased', '2 updates deferred (phased rollout)'],
+        ['ok', 'Snap', '3 snaps refreshed', '3 snaps would be refreshed'],
+        ['ok', 'Flatpak', '4 apps updated', '4 apps would be updated'],
+        ['skip', 'Homebrew', 'not installed']
+      ],
+      sum: ['Done. 19 updated, 1 skipped, 2 held back, 0 failed.', 'Dry run. 19 would update, 1 skipped, 2 held back. Nothing changed.'],
+      note: 'A restart is recommended. Not rebooting.'
+    },
+    macos: {
+      label: 'macOS', shell: 'zsh', prompt: '%', flag: ' --dry-run', join: ' && ',
+      cmd: [CLONE, 'cd update-everything', './macos/update-everything.sh'],
+      rows: [
+        ['ok', 'macOS', '1 security update installed', '1 security update would be installed'],
+        ['hold', 'macOS major', 'upgrade held back (OCLP detected)'],
+        ['ok', 'App Store', '2 apps updated', '2 apps would be updated'],
+        ['ok', 'Homebrew', '5 formulae upgraded', '5 formulae would be upgraded'],
+        ['skip', 'MacPorts', 'not installed'],
+        ['skip', 'Nix', 'not installed']
+      ],
+      sum: ['Done. 8 updated, 2 skipped, 1 held back, 0 failed.', 'Dry run. 8 would update, 2 skipped, 1 held back. Nothing changed.'],
+      note: 'A restart is needed to finish the security update. Not rebooting.'
+    },
+    windows: {
+      label: 'Windows', shell: 'PowerShell', prompt: 'PS>', flag: ' -DryRun', join: '; ',
+      cmd: [CLONE, 'cd update-everything', '.\\windows\\update-everything.ps1'],
+      rows: [
+        ['ok', 'Windows Update', '3 updates installed', '3 updates would be installed'],
+        ['hold', 'Feature update', '1 major upgrade held back'],
+        ['ok', 'WinGet', '6 packages upgraded', '6 packages would be upgraded'],
+        ['ok', 'Chocolatey', '2 packages upgraded', '2 packages would be upgraded'],
+        ['skip', 'Scoop', 'not installed'],
+        ['ok', 'MS Store', '4 apps updated', '4 apps would be updated']
+      ],
+      sum: ['Done. 15 updated, 1 skipped, 1 held back, 0 failed.', 'Dry run. 15 would update, 1 skipped, 1 held back. Nothing changed.'],
+      note: 'A restart is pending. Not rebooting.'
+    }
+  };
+
+  var TAGS = { ok: ['[✓]', '#22C55E'], skip: ['[-]', '#6B7280'], hold: ['[!]', '#F59E0B'], fail: ['[✗]', '#EF4444'] };
+
+  var RULES = [
+    ['Never reboots', 'It tells you when a restart is needed and leaves the timing to you.'],
+    ['No surprise major upgrades', 'Major operating-system upgrades only when asked. On macOS, never above a deliberately conservative ceiling.'],
+    ['Protects OpenCore Legacy Patcher Macs', 'Detects OCLP and refuses major upgrades outright, because one can leave older hardware unusable.'],
+    ['Respects phased rollouts', 'Follows Ubuntu’s phased updates instead of forcing every package immediately.'],
+    ['Installs nothing new', 'Never installs a package manager, adds a software source, or touches project dependencies.'],
+    ['One failure stops nothing', 'Each updater runs on its own. The summary separates updated, skipped, held back and failed.'],
+    ['Dry run on every platform', 'Shows what would happen and changes nothing.']
+  ];
+
+  var reducedMotion = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  var state = { platform: 'linux', dry: true, shown: 0, running: false };
+  var timer = null, copyTimer = null;
+
+  function el(tag, attrs, children) {
+    var node = document.createElement(tag);
+    if (attrs) for (var k in attrs) {
+      if (k === 'style') node.style.cssText = attrs[k];
+      else if (k === 'text') node.textContent = attrs[k];
+      else node.setAttribute(k, attrs[k]);
+    }
+    (children || []).forEach(function (c) { if (c) node.appendChild(c); });
+    return node;
+  }
+
+  function lines() {
+    var p = DATA[state.platform], dry = state.dry;
+    var out = [{ tag: '[+]', tagColor: '#3B82F6', name: 'Checking', text: (dry ? 'dry run · ' : '') + 'updaters on ' + p.label, textColor: '#9CA3AF' }];
+    p.rows.forEach(function (r) {
+      var t = TAGS[r[0]];
+      out.push({ tag: t[0], tagColor: t[1], name: r[1], text: dry && r[3] ? r[3] : r[2],
+        textColor: r[0] === 'hold' ? '#FCD34D' : r[0] === 'skip' ? '#6B7280' : '#D1D5DB' });
+    });
+    return out;
+  }
+
+  function fullCommand() {
+    var p = DATA[state.platform];
+    return p.cmd.join(p.join) + (state.dry ? p.flag : '');
+  }
+
+  function renderTabs() {
+    var host = document.getElementById('tabs');
+    host.textContent = '';
+    Object.keys(DATA).forEach(function (key) {
+      var b = el('button', { type: 'button', role: 'tab', 'class': 'tab', 'aria-selected': String(key === state.platform), text: DATA[key].label });
+      b.addEventListener('click', function () { state.platform = key; renderAll(); runDemo(); });
+      host.appendChild(b);
+    });
+  }
+
+  function renderCommand() {
+    var p = DATA[state.platform];
+    document.getElementById('shell-name').textContent = p.shell;
+    var host = document.getElementById('cmd');
+    host.textContent = '';
+    p.cmd.forEach(function (text, i) {
+      var flag = i === p.cmd.length - 1 && state.dry ? p.flag : '';
+      host.appendChild(el('div', { style: 'white-space:pre;display:flex;gap:10px' }, [
+        el('span', { style: 'color:#4B5563;user-select:none', text: p.prompt }),
+        el('span', { style: 'color:#E5E7EB' }, [document.createTextNode(text), flag ? el('span', { style: 'color:#22C55E', text: flag }) : null])
+      ]));
+    });
+    var sw = document.getElementById('dry');
+    sw.setAttribute('aria-checked', String(state.dry));
+  }
+
+  function renderTerminal() {
+    var p = DATA[state.platform], all = lines();
+    var host = document.getElementById('term');
+    host.textContent = '';
+    all.slice(0, Math.min(state.shown, all.length)).forEach(function (l) {
+      host.appendChild(el('div', { 'class': 'term-line', style: 'color:' + l.textColor }, [
+        el('span', { style: 'color:' + l.tagColor, text: l.tag }),
+        el('span', { style: 'color:#E5E7EB', text: l.name }),
+        el('span', { text: l.text })
+      ]));
+    });
+    if (state.shown > all.length) {
+      host.appendChild(el('div', { style: 'margin-top:14px;padding-top:14px;border-top:1px dashed #1F2937;color:#22C55E;white-space:normal', text: p.sum[state.dry ? 1 : 0] }));
+      host.appendChild(el('div', { style: 'color:#9CA3AF;white-space:normal', text: state.dry ? 'No updates were installed.' : p.note }));
+    }
+    if (state.running) host.appendChild(el('span', { 'class': 'cursor', 'aria-hidden': 'true' }));
+    document.getElementById('run').textContent = state.running ? 'Running…' : '↻ Run again';
+  }
+
+  function renderRules() {
+    var host = document.getElementById('rules');
+    RULES.forEach(function (r, i) {
+      host.appendChild(el('li', { style: 'display:grid;grid-template-columns:44px minmax(0,1fr);gap:8px;padding:18px 0;border-bottom:1px solid #1F2937' }, [
+        el('span', { 'class': 'mono', style: 'font-size:13px;color:#4B5563;padding-top:3px', 'aria-hidden': 'true', text: String(i + 1).padStart(2, '0') }),
+        el('div', null, [
+          el('div', { style: 'font-size:17px;font-weight:600;color:#F9FAFB', text: r[0] }),
+          el('div', { style: 'font-size:15px;line-height:1.55;color:#9CA3AF;margin-top:4px;text-wrap:pretty', text: r[1] })
+        ])
+      ]));
+    });
+  }
+
+  function renderAll() { renderTabs(); renderCommand(); renderTerminal(); }
+
+  function runDemo() {
+    clearInterval(timer);
+    var total = lines().length + 1;
+    if (reducedMotion) {
+      state.shown = total; state.running = false; renderTerminal(); return;
+    }
+    state.shown = 0; state.running = true; renderTerminal();
+    timer = setInterval(function () {
+      if (state.shown >= total) { clearInterval(timer); state.running = false; }
+      else state.shown += 1;
+      renderTerminal();
+    }, 340);
+  }
+
+  document.getElementById('dry').addEventListener('click', function () {
+    state.dry = !state.dry; renderCommand(); runDemo();
+  });
+  document.getElementById('run').addEventListener('click', runDemo);
+  document.getElementById('copy').addEventListener('click', function () {
+    var btn = this;
+    var done = function () {
+      btn.textContent = 'Copied';
+      clearTimeout(copyTimer);
+      copyTimer = setTimeout(function () { btn.textContent = 'Copy'; }, 1600);
+    };
+    try {
+      if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(fullCommand()).then(done, function () {});
+    } catch (e) { /* clipboard unavailable */ }
+  });
+
+  // Wireframe terrain that rolls toward the viewer behind the hero.
+  function startWaves() {
+    var c = document.getElementById('waves');
+    if (!c || !c.getContext) return;
+    var ctx = c.getContext('2d');
+    var W = 0, H = 0;
+    var opts = { speed: 1, lines: 64, lo: 0.9, hi: 2, period: 12 };
+    function resize() {
+      var dpr = Math.min(window.devicePixelRatio || 1, 2);
+      W = c.clientWidth; H = c.clientHeight;
+      c.width = W * dpr; c.height = H * dpr; ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      if (reducedMotion) draw(performance.now(), 0);
+    }
+    function terrain(x, z) {
+      return 1.35 * Math.sin(x * 0.085 + z * 0.11) +
+        0.95 * Math.sin(x * 0.047 - z * 0.072 + 1.7) +
+        0.5 * Math.sin(x * 0.16 + z * 0.21 + 0.3) +
+        0.25 * Math.sin(x * 0.31 - z * 0.17 + 0.9);
+    }
+    var travel = 0, last = performance.now(), raf = 0;
+    function draw(now, dt) {
+      var amp = opts.lo + (opts.hi - opts.lo) * (0.5 - 0.5 * Math.cos(now / 1000 * 2 * Math.PI / opts.period));
+      travel += dt * opts.speed * 3;
+      ctx.clearRect(0, 0, W, H);
+      if (!W || !H) return;
+      var horizon = H * 0.2, f = H * 0.9, camY = 5.6, zNear = 1.5, zFar = 64, dz = (zFar - zNear) / opts.lines;
+      var grad = ctx.createLinearGradient(0, 0, W, 0);
+      grad.addColorStop(0, '#3B82F6'); grad.addColorStop(0.5, '#2BB3A0'); grad.addColorStop(1, '#22C55E');
+      var sway = Math.sin(travel * 0.04) * 6;
+      var first = Math.floor((travel + zFar) / dz), lastN = Math.ceil((travel + zNear) / dz);
+      for (var n = first; n >= lastN; n--) {
+        var Z = n * dz, z = Z - travel;
+        if (z < zNear || z > zFar) continue;
+        var depth = (z - zNear) / (zFar - zNear);
+        var line = new Path2D();
+        for (var sx = -8, i = 0; sx <= W + 8; sx += 6, i++) {
+          var xw = (sx - W / 2) * z / f + sway;
+          var edge = Math.abs(sx / W - 0.5) * 2;
+          var h = terrain(xw, Z) * amp * (0.55 + 0.75 * edge * edge) + 0.6 * edge;
+          var sy = horizon + (camY - h) * f / z;
+          if (i) line.lineTo(sx, sy); else line.moveTo(sx, sy);
+        }
+        var fill = new Path2D(line);
+        fill.lineTo(W + 8, H + 8); fill.lineTo(-8, H + 8); fill.closePath();
+        ctx.globalAlpha = 1; ctx.fillStyle = '#0B0F14'; ctx.fill(fill);
+        ctx.globalAlpha = (0.1 + 0.8 * Math.pow(1 - depth, 1.6)) * Math.min(1, (1 - depth) / 0.2);
+        ctx.strokeStyle = grad; ctx.lineWidth = 0.6 + (1 - depth) * 1.1;
+        ctx.stroke(line);
+      }
+      ctx.globalAlpha = 1;
+    }
+    function frame(now) {
+      var dt = Math.min(0.05, (now - last) / 1000); last = now;
+      if (!document.hidden) draw(now, dt);
+      raf = requestAnimationFrame(frame);
+    }
+    if (window.ResizeObserver) new ResizeObserver(resize).observe(c);
+    else window.addEventListener('resize', resize);
+    resize();
+    if (!reducedMotion) raf = requestAnimationFrame(frame);
+  }
+
+  renderRules();
+  renderAll();
+  runDemo();
+  startWaves();
+})();
+</script>
+</body>
+</html>
