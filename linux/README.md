@@ -14,11 +14,19 @@ system-owned locations rather than the caller's `PATH`.
 | Option | Effect |
 |---|---|
 | `--system-only` | Update only the native system package manager. |
+| `--skip-system-update` | Update only Snap, Flatpak, and Homebrew. Cannot be combined with `--system-only`. |
 | `--no-cleanup` | Skip unused-dependency and package-cache cleanup. |
 | `--include-phased-updates` | Install APT updates that are still being phased in. Held back and reported by default. |
 | `--dry-run` | Detect managers and print mutating commands without running them or prompting for elevation. |
 | `-h`, `--help` | Show help and exit. |
 | `-v`, `--version` | Show version and exit. |
+
+`--skip-system-update` skips native-manager detection and the up-front
+privilege check, so nothing prompts at the start. Flatpak user installations
+and Homebrew run without privileges. Snap and system-wide Flatpak updates are
+still elevated per command, so `sudo` or `doas` prompts when the script
+reaches them (or uses a cached credential). If neither tool is available, those
+updates are reported as failed and the others still run.
 
 APT uses `upgrade --with-new-pkgs`: required new dependencies may be installed,
 but existing packages are not removed by the upgrade itself. The optional
@@ -45,17 +53,45 @@ reboots the system. NixOS flake updates update `/etc/nixos/flake.lock` before
 rebuilding, so that system configuration should be backed up or version
 controlled.
 
+## Exit codes
+
+| Code | Meaning |
+|---:|---|
+| `0` | Every detected update operation completed successfully |
+| `1` | At least one detected update operation failed |
+| `2` | Invalid or conflicting options, or a system other than Linux |
+| `130` | Interrupted by `SIGINT` (Ctrl-C) |
+| `143` | Interrupted by `SIGTERM` |
+
+On `SIGINT` or `SIGTERM` the script starts no further manager, prints the
+summary of what had completed, failed, or been held back, names the manager
+that was interrupted, and exits `130` or `143`. Because Bash waits for the
+running command before handling a signal, a `SIGTERM` sent to the script alone
+lets the current package-manager command finish first; Ctrl-C reaches that
+command as well and stops it.
+
 ## Validation limits
 
-The safe shell suite covers options, exit codes, root and privilege behavior,
+The safe shell suite covers options, exit codes, signal handling, root and privilege behavior,
 manager selection and fallback, immutable-system precedence, cleanup, phased
 APT arguments, kept-back package parsing, failure isolation, summaries, quoted
 paths, dry runs, and reboot notices. Every test replaces command discovery and
 execution with shell functions, so no test can reach a real package manager.
 
-CI does not run live package updates, and no distribution has been verified
-against a live update as part of the release process. Distribution-specific
-behavior still needs validation on disposable or backed-up installations.
+CI also runs `update-everything.sh --dry-run` as an unprivileged user inside
+digest-pinned containers of Debian stable, Ubuntu 24.04, Fedora, Rocky Linux 9,
+openSUSE Tumbleweed, Arch Linux, Alpine, Void Linux, and Gentoo, and fails
+unless each one detects its expected manager (`apt`, `dnf5`, `dnf`, `zypper`,
+`pacman`, `apk`, `xbps`, or `emerge`) and exits 0. This verifies detection and
+dry-run planning against genuine `/etc/os-release` files and binary locations;
+`tests/container-dry-run.sh` runs the same check locally with Docker. NixOS,
+rpm-ostree, transactional-update, Solus, Clear Linux, Slackware, and Mageia
+have no container leg and are covered only by mocks.
+
+CI does not run live package updates: the containers are offline during the
+dry run and no mutating command is executed. No distribution has been verified
+against a live update as part of the release process, so distribution-specific
+update behavior still needs validation on disposable or backed-up installations.
 
 See the [repository README](../README.md) for the full manager list, safety
 boundaries, exit-code contract, and contribution instructions.

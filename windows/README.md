@@ -46,7 +46,7 @@ Run the script again as your normal user to update Scoop packages:
 | Option | Effect |
 |---|---|
 | `-SystemOnly` | Install Windows updates only, and run no application updater. |
-| `-SkipWindowsUpdate` | Run the application updaters only. |
+| `-SkipWindowsUpdate` | Run the application updaters only. `-SkipSystemUpdate` is an alias, matching `--skip-system-update` on Linux and macOS. |
 | `-IncludeDrivers` | Also install driver updates offered by Windows Update. |
 | `-NoCleanup` | Skip Scoop's old-version and download-cache cleanup commands. Other managers retain their own built-in behavior. |
 | `-PatchMyPCPath <path>` | Full path to `PatchMyPC.exe`, for a portable copy the script does not find on its own. |
@@ -76,7 +76,17 @@ trigger a Microsoft Store scan, or clean caches.
 | `1` | At least one detected update operation failed |
 | `2` | Conflicting options, or the script was started on a platform other than Windows |
 
+| `130`, `143` | Not used on Windows; see below |
+
 An unrecognised option is reported by the script itself and also returns `2`.
+
+The Linux and macOS scripts print their summary and exit `130` or `143` when
+interrupted. This script does not: Ctrl+C stops it without a summary, and the
+exit code is then whatever PowerShell reports. A `try`/`finally` block would
+run on Ctrl+C, but only after a blocking Windows Update call returns, inside a
+pipeline that is already stopping, and Windows PowerShell 5.1 does not let the
+script set its exit code from there, so it could not report an interruption
+reliably. Scroll back through the output to see which updaters had finished.
 
 ## Exit-code handling for external updaters
 

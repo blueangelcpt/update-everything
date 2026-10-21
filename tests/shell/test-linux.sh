@@ -399,6 +399,121 @@ test_restart_and_quoted_dry_run_output() {
     assert_contains "$output" 'label\;with\ punctuation'
 }
 
+# Shared stand-ins for a full main run on a normal user's APT machine.
+mock_main_environment() {
+    uname() { printf 'Linux\n'; }
+    is_root() { return 1; }
+    load_os_release() { DISTRO_NAME='Test Linux'; }
+    select_privilege_tool() { PRIVILEGE_TOOL=/usr/bin/sudo; }
+    reboot_is_required() { return 1; }
+    FAILED=(); SUCCEEDED=(); SKIPPED=(); PLANNED=(); HELD_BACK=(); DRY_RUN=0
+}
+
+test_system_only_and_skip_system_update_conflict() {
+    local output status
+    output="$(main --system-only --skip-system-update 2>&1)"; status=$?
+    assert_status 2 "$status" || return 1
+    assert_contains "$output" '--system-only and --skip-system-update cannot be used together.' || return 1
+
+    output="$(main --skip-system-update --system-only 2>&1)"; status=$?
+    assert_status 2 "$status" || return 1
+    assert_contains "$output" 'cannot be used together'
+}
+
+test_skip_system_update_runs_only_additional_managers() {
+    local output status
+    mock_main_environment
+    # Any of these would mean the system step was not really skipped.
+    detect_system_manager() { printf 'DETECTED-SYSTEM\n'; SYSTEM_MANAGER=apt; }
+    validate_privileges() { printf 'VALIDATED-PRIVILEGES\n'; }
+    # Invoked indirectly through main/run_task.
+    # shellcheck disable=SC2317
+    update_system_packages() { printf 'SYSTEM-UPDATED\n'; }
+    have_system_command() { [[ "$1" == flatpak ]]; }
+    have_command() { [[ "$1" == brew ]]; }
+    # shellcheck disable=SC2317
+    update_flatpak() { printf 'FLATPAK-UPDATED\n'; }
+    # shellcheck disable=SC2317
+    update_homebrew() { printf 'HOMEBREW-UPDATED\n'; }
+
+    output="$(main --skip-system-update 2>&1)"; status=$?
+    assert_status 0 "$status" || return 1
+    assert_contains "$output" 'FLATPAK-UPDATED' || return 1
+    assert_contains "$output" 'HOMEBREW-UPDATED' || return 1
+    assert_contains "$output" '- System packages (--skip-system-update)' || return 1
+    assert_contains "$output" '- Snap' || return 1
+    assert_not_contains "$output" 'DETECTED-SYSTEM' || return 1
+    assert_not_contains "$output" 'VALIDATED-PRIVILEGES' || return 1
+    assert_not_contains "$output" 'SYSTEM-UPDATED' || return 1
+    assert_not_contains "$output" 'Requesting administrator privileges'
+}
+
+# Without the up-front validation, Snap still elevates through as_root, which
+# lets sudo prompt when it is reached, and fails cleanly when there is no
+# privilege tool at all, without stopping the managers that need none.
+test_skip_system_update_elevates_snap_on_demand() {
+    local output status
+    mock_main_environment
+    # Invoked indirectly through as_root.
+    # shellcheck disable=SC2317
+    find_system_command() { printf '/usr/bin/%s\n' "$1"; }
+    have_system_command() { [[ "$1" == snap || "$1" == flatpak ]]; }
+    have_command() { return 1; }
+    validate_privileges() { printf 'VALIDATED-PRIVILEGES\n'; }
+    # shellcheck disable=SC2317
+    update_flatpak() { printf 'FLATPAK-UPDATED\n'; }
+
+    output="$(main --skip-system-update --dry-run 2>&1)"; status=$?
+    assert_status 0 "$status" || return 1
+    assert_contains "$output" '[DRY-RUN] /usr/bin/sudo /usr/bin/snap refresh' || return 1
+    assert_not_contains "$output" 'VALIDATED-PRIVILEGES' || return 1
+
+    select_privilege_tool() { PRIVILEGE_TOOL=unavailable; }
+    FAILED=(); SUCCEEDED=(); SKIPPED=(); PLANNED=()
+    output="$(main --skip-system-update 2>&1)"; status=$?
+    assert_status 1 "$status" || return 1
+    assert_contains "$output" 'neither sudo nor doas is installed' || return 1
+    assert_contains "$output" 'Snap packages (exit 127)' || return 1
+    assert_contains "$output" 'FLATPAK-UPDATED'
+}
+
+expect_interrupted_run() {
+    local signal="$1" expected_status="$2"
+    local output status
+    mock_main_environment
+    INTERRUPT_SIGNAL="$signal"
+    detect_system_manager() { SYSTEM_MANAGER=apt; return 0; }
+    validate_privileges() { return 0; }
+    # shellcheck disable=SC2317
+    update_system_packages() { return 0; }
+    have_system_command() { [[ "$1" == snap || "$1" == flatpak ]]; }
+    have_command() { return 1; }
+    # shellcheck disable=SC2317
+    update_snap() { signal_current_shell "$INTERRUPT_SIGNAL"; printf 'SNAP-CONTINUED\n'; }
+    # shellcheck disable=SC2317
+    update_flatpak() { printf 'FLATPAK-STARTED\n'; }
+
+    output="$(main 2>&1)"; status=$?
+    assert_status "$expected_status" "$status" || return 1
+    assert_contains "$output" "Received SIG$signal" || return 1
+    assert_contains "$output" '==> Summary' || return 1
+    assert_contains "$output" 'Completed:' || return 1
+    assert_contains "$output" '- System packages (apt)' || return 1
+    assert_contains "$output" "Interrupted by SIG$signal:" || return 1
+    assert_contains "$output" '- Snap packages (stopped while running' || return 1
+    assert_not_contains "$output" 'SNAP-CONTINUED' || return 1
+    assert_not_contains "$output" 'FLATPAK-STARTED' || return 1
+    assert_not_contains "$output" 'All detected package managers completed'
+}
+
+test_sigint_prints_summary_and_exits_130() {
+    expect_interrupted_run INT 130
+}
+
+test_sigterm_prints_summary_and_exits_143() {
+    expect_interrupted_run TERM 143
+}
+
 run_test 'help and version output' test_help_and_version
 run_test 'invalid option and unsupported platform' test_invalid_option_and_platform
 run_test 'whole-script root execution is refused' test_root_execution_is_refused
@@ -417,5 +532,10 @@ run_test 'Flatpak inventory errors preserve other-scope execution' test_flatpak_
 run_test 'updater failure isolation and accounting' test_failure_isolation_and_accounting
 run_test 'process exit codes zero and one' test_exit_codes_zero_and_one
 run_test 'restart notice and quoted paths' test_restart_and_quoted_dry_run_output
+run_test '--system-only and --skip-system-update conflict' test_system_only_and_skip_system_update_conflict
+run_test '--skip-system-update skips detection and privilege validation' test_skip_system_update_runs_only_additional_managers
+run_test '--skip-system-update elevates Snap only on demand' test_skip_system_update_elevates_snap_on_demand
+run_test 'SIGINT prints the summary and exits 130' test_sigint_prints_summary_and_exits_130
+run_test 'SIGTERM prints the summary and exits 143' test_sigterm_prints_summary_and_exits_143
 
 finish_tests

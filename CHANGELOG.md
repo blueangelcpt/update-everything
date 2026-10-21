@@ -5,6 +5,20 @@ All notable changes are documented here. The project uses one repository-wide
 
 ## [2.1.0] - 2026-10-21
 
+### Added
+
+- Add `--skip-system-update` to the Linux script, matching macOS. It updates
+  only Snap, Flatpak, and Homebrew, skips native-manager detection and the
+  up-front privilege check, and is recorded as skipped in the summary. Snap and
+  system Flatpak updates still elevate per command, so `sudo` or `doas` prompts
+  when they are reached. Combining it with `--system-only` exits `2`.
+- Accept `-SkipSystemUpdate` on Windows as an alias of `-SkipWindowsUpdate`,
+  which keeps working.
+- Handle `SIGINT` and `SIGTERM` in the Linux and macOS scripts. An interrupted
+  run starts no further updater, prints the summary of what had completed,
+  failed, or been held back along with the updater that was interrupted, and
+  exits `130` or `143`.
+
 ### Changed
 
 - Make the macOS version ceiling conditional on OpenCore Legacy Patcher. A Mac
@@ -35,6 +49,23 @@ All notable changes are documented here. The project uses one repository-wide
   The summary omits the OCLP and ceiling lines, held-back reasons never name
   it, and `--help` lists `--max-macos-major` only where a ceiling applies.
 - Skip OCLP detection entirely on Apple silicon, which OCLP does not support.
+
+### Documentation
+
+- Document exit codes `130` and `143`, and that the Windows script prints no
+  summary on Ctrl+C because Windows PowerShell 5.1 cannot report the
+  interruption reliably.
+
+### Tests and CI
+
+- Run the Linux script's `--dry-run` as an unprivileged user inside
+  digest-pinned containers of Debian stable, Ubuntu 24.04, Fedora, Rocky
+  Linux 9, openSUSE Tumbleweed, Arch Linux, Alpine, Void Linux, and Gentoo.
+  Each leg fails unless the expected native manager is detected from the
+  image's genuine `/etc/os-release` and binary locations and the dry run exits
+  0. The container is disconnected from the network before the script starts,
+  so no leg can perform a live update. The check lives in
+  `tests/container-dry-run.sh` and also runs locally with Docker.
 
 ## [2.0.0] - 2026-08-09
 

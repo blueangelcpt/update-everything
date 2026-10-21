@@ -79,6 +79,11 @@ RESTART_REQUIRED=0
 
 PRIVILEGE_TOOL=""
 
+# The task that run_task is executing, and the signal that stopped the run, so
+# that an interrupted run can still say what had finished.
+CURRENT_TASK=""
+INTERRUPTED_BY=""
+
 SUCCEEDED=()
 FAILED=()
 SKIPPED=()
@@ -118,6 +123,9 @@ USAGE
 
 Run this script as your normal user. It will request elevated privileges only
 for commands that require them, and Homebrew refuses to run as root.
+
+Exit status: 0 success, 1 an updater failed, 2 invalid or conflicting options
+or an unsupported system, 130 or 143 interrupted by SIGINT or SIGTERM.
 USAGE
 }
 
@@ -256,6 +264,7 @@ run_task() {
     shift
 
     section "$label"
+    CURRENT_TASK="$label"
 
     if "$@"; then
         if (( DRY_RUN )); then
@@ -270,6 +279,7 @@ run_task() {
         FAILED+=("$label (exit $status)")
         error "$label failed with exit status $status. Continuing with the remaining managers."
     fi
+    CURRENT_TASK=""
 
     # A failed manager should not prevent unrelated managers from being tried.
     return 0
@@ -898,6 +908,14 @@ print_summary() {
         done
     fi
 
+    if [[ -n "$INTERRUPTED_BY" ]]; then
+        printf '\nInterrupted by %s:\n' "$INTERRUPTED_BY" >&2
+        if [[ -n "$CURRENT_TASK" ]]; then
+            printf '  - %s (stopped while running; it may be partly applied)\n' "$CURRENT_TASK" >&2
+        fi
+        printf '  - Any manager that had not started yet was not run.\n' >&2
+    fi
+
     if (( RESTART_REQUIRED )); then
         printf '\n[NOTICE] A restart is required to finish installing one or more updates.\n'
     fi
@@ -908,6 +926,24 @@ print_summary() {
         printf '         Legacy Patcher and re-apply them, and confirm that its bootloader on the\n'
         printf '         EFI partition is current before restarting again.\n'
     fi
+}
+
+# Run from the INT and TERM traps. Bash runs a trap only once the foreground
+# command has exited, so by now the interrupted updater has stopped. The
+# handler only reports: it restores the default dispositions first, so that a
+# second Ctrl-C ends the script at once, and it never returns to main, so no
+# further updater can start.
+handle_interrupt() {
+    local signal="$1"
+    local status="$2"
+
+    trap - INT TERM
+    INTERRUPTED_BY="SIG$signal"
+    printf '\n' >&2
+    warn "Received SIG$signal. No further updates will be started."
+    print_summary
+    error "Updates were interrupted before they finished."
+    exit "$status"
 }
 
 main() {
@@ -973,6 +1009,9 @@ main() {
         error "Run this script as a normal user, not as root or through sudo."
         return 2
     fi
+
+    trap 'handle_interrupt INT 130' INT
+    trap 'handle_interrupt TERM 143' TERM
 
     load_system_information || return 2
     select_privilege_tool
@@ -1040,6 +1079,8 @@ main() {
         SKIPPED+=("Additional package managers (--system-only)")
     fi
 
+    # From here on there is nothing left to interrupt but the summary itself.
+    trap - INT TERM
     print_summary
 
     if ((${#FAILED[@]})); then

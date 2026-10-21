@@ -30,6 +30,8 @@
 
 .PARAMETER SkipWindowsUpdate
     Run the application updaters only, and do not install Windows updates.
+    -SkipSystemUpdate is an alias, matching the Linux and macOS
+    --skip-system-update option.
 
 .PARAMETER IncludeDrivers
     Include driver updates offered by Windows Update. Software updates only
@@ -65,11 +67,17 @@
     Chocolatey both require administrator privileges. Scoop refuses to run
     elevated, so it is skipped in an elevated session and updated when the
     script is run as your normal user.
+
+    Exit codes: 0 success, 1 an updater failed, 2 invalid or conflicting
+    options or an unsupported platform. Pressing Ctrl+C stops the script
+    without printing a summary, and its exit code is then set by PowerShell
+    rather than by this script.
 #>
 
 [CmdletBinding()]
 param(
     [switch]$SystemOnly,
+    [Alias('SkipSystemUpdate')]
     [switch]$SkipWindowsUpdate,
     [switch]$IncludeDrivers,
     [switch]$NoCleanup,
@@ -831,7 +839,7 @@ function Invoke-Main {
     }
 
     if ($SystemOnly -and $SkipWindowsUpdate) {
-        Write-Fail '-SystemOnly and -SkipWindowsUpdate cannot be used together.'
+        Write-Fail '-SystemOnly and -SkipWindowsUpdate (-SkipSystemUpdate) cannot be used together.'
         $script:ExitCode = 2
         return
     }
@@ -867,6 +875,11 @@ function Invoke-Main {
     Write-Summary -OperatingSystem $operatingSystem
 }
 
+# Unlike the shell scripts, this one does not print a summary when it is
+# interrupted. A try/finally around Invoke-Main would run on Ctrl+C, but only
+# after a blocking Windows Update COM call returns, inside a pipeline that is
+# already stopping, and with an exit code PowerShell 5.1 does not let the
+# script choose, so it could not report an interruption reliably.
 if ($env:UPDATE_EVERYTHING_TESTING -ne '1') {
     Invoke-Main
     exit $script:ExitCode

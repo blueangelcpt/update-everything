@@ -30,7 +30,7 @@ jobs:
           persist-credentials: false
 
       - name: Validate Bash syntax
-        run: bash -n linux/update-everything.sh macos/update-everything.sh tests/run-shell-tests.sh tests/shell/*.sh
+        run: bash -n linux/update-everything.sh macos/update-everything.sh tests/run-shell-tests.sh tests/container-dry-run.sh tests/shell/*.sh
 
       - name: Install pinned ShellCheck
         run: |
@@ -42,13 +42,81 @@ jobs:
           echo "$RUNNER_TEMP/shellcheck-v0.10.0" >> "$GITHUB_PATH"
 
       - name: Run ShellCheck
-        run: shellcheck linux/update-everything.sh macos/update-everything.sh tests/run-shell-tests.sh tests/shell/*.sh
+        run: shellcheck linux/update-everything.sh macos/update-everything.sh tests/run-shell-tests.sh tests/container-dry-run.sh tests/shell/*.sh
 
       - name: Run shell tests
         run: tests/run-shell-tests.sh
 
       - name: Check that the embedded versions agree
         run: tests/check-versions.sh
+
+  # Detection and dry-run planning against real distribution images, which the
+  # mocked unit suites cannot cover: each image's genuine /etc/os-release and
+  # binary locations. Only --dry-run ever runs, and the container is cut off
+  # from the network before it does, so no leg can perform a live update.
+  #
+  # Installing bash on images that lack it, and creating the unprivileged user
+  # the script requires, is test setup inside a throwaway container. It is not
+  # a change to the project rule that the scripts never install package
+  # managers or change repositories on a user's machine. sudo is not installed:
+  # a dry run never invokes it, and an image without sudo or doas exercises the
+  # "<administrator>" placeholder instead.
+  linux-distributions:
+    name: Linux dry run (${{ matrix.name }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Debian stable
+            image: debian:stable@sha256:f7c6c9e4aba843dc41bac68bbf104773f71fabf53f74f8441049aaa56e50c4e2
+            manager: apt
+          - name: Ubuntu 24.04
+            image: ubuntu:24.04@sha256:68ee22004a9109b44973313b02ff7b1de250f1de0f5ecb628d73f579aaff33ac
+            manager: apt
+          - name: Fedora latest
+            image: fedora:latest@sha256:43b29f65a41eb9c35e1cd5323e3bdf3b655c2357a9f4f1ff2f9c2798e5045d80
+            manager: dnf5
+          # The Docker Official rockylinux image stopped at 9.3; the Rocky
+          # project publishes current images under its own namespace.
+          - name: Rocky Linux 9
+            image: rockylinux/rockylinux:9@sha256:8101994123cf3d0a8fee517bee7f39e555c7d92bd2d9eb3303cc988a0eeed00f
+            manager: dnf
+          - name: openSUSE Tumbleweed
+            image: opensuse/tumbleweed:latest@sha256:049953b95bb89ebe61239f1313b59d73c59a0373a6113de138835aa6b0b67851
+            manager: zypper
+          - name: Arch Linux
+            image: archlinux:latest@sha256:e43f1fd80e073992c5f173efbbbf65144170bf60aeb7369940087d63eacea8f4
+            manager: pacman
+          - name: Alpine latest
+            image: alpine:latest@sha256:294b683cb724975bec92580e1e685676bd4b50bda910ddb8c51d4cabeaec77e6
+            manager: apk
+            setup: apk add --no-cache bash
+          # The project's own images; Docker Hub's voidlinux/voidlinux is
+          # unmaintained. Even the -full image ships without bash.
+          - name: Void Linux
+            image: ghcr.io/void-linux/void-glibc-full:latest@sha256:9533af64ff46c0173b671ebc3477857c622afdb36eaf11f51419adb0a32f9f90
+            manager: xbps
+            setup: xbps-install -Syu xbps && xbps-install -y bash
+          # No container image is a real NixOS system (nixos/nix is Nix on a
+          # non-NixOS base, without /etc/NIXOS or nixos-rebuild), so Gentoo is
+          # the source-based entry.
+          - name: Gentoo
+            image: gentoo/stage3:latest@sha256:916dc4d8cf38d316da9a838c2e20f32f16b7d4f21ef137b4682b66d68874c2c5
+            manager: emerge
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Dry run in a disposable container
+        env:
+          IMAGE: ${{ matrix.image }}
+          MANAGER: ${{ matrix.manager }}
+          SETUP: ${{ matrix.setup }}
+        run: tests/container-dry-run.sh "$IMAGE" "$MANAGER" "$SETUP"
 
   macos:
     name: macOS Bash 3.2 compatibility
