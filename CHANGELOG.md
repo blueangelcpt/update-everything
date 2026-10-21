@@ -5,6 +5,26 @@ All notable changes are documented here. The project uses one repository-wide
 
 ## [Unreleased]
 
+### Added
+
+- Add `--skip-system-update` to the Linux script, matching macOS. It updates
+  only Snap, Flatpak, and Homebrew, skips native-manager detection and the
+  up-front privilege check, and is recorded as skipped in the summary. Snap and
+  system Flatpak updates still elevate per command, so `sudo` or `doas` prompts
+  when they are reached. Combining it with `--system-only` exits `2`.
+- Accept `-SkipSystemUpdate` on Windows as an alias of `-SkipWindowsUpdate`,
+  which keeps working.
+- Handle `SIGINT` and `SIGTERM` in the Linux and macOS scripts. An interrupted
+  run starts no further updater, prints the summary of what had completed,
+  failed, or been held back along with the updater that was interrupted, and
+  exits `130` or `143`.
+
+### Documentation
+
+- Document exit codes `130` and `143`, and that the Windows script prints no
+  summary on Ctrl+C because Windows PowerShell 5.1 cannot report the
+  interruption reliably.
+
 ### Tests and CI
 
 - Run the Linux script's `--dry-run` as an unprivileged user inside

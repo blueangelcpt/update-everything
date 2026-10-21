@@ -32,6 +32,13 @@ assert_not_contains() {
     [[ "$haystack" != *"$needle"* ]] || fail "expected output not to contain: $needle"
 }
 
+# Send a signal to the shell that is running main. That shell is a command
+# substitution, so $$ would name the test runner instead; the parent of an
+# exec'd child is the current shell even under Bash 3.2, which has no BASHPID.
+signal_current_shell() {
+    kill "-$1" "$(exec sh -c 'printf "%s" "$PPID"')"
+}
+
 run_test() {
     local name="$1"
     local test_function="$2"

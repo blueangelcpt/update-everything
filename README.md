@@ -78,6 +78,9 @@ Usage: update-everything.sh [options]
 
 Options:
   --system-only            Update only the native system package manager.
+  --skip-system-update     Update only Snap, Flatpak, and Homebrew. Snap and
+                           system Flatpak still ask for sudo or doas when
+                           they reach a step that needs it.
   --no-cleanup             Do not remove unused dependencies or cached packages.
   --include-phased-updates Install APT updates that are still being phased in.
                            Phasing is a distribution safety mechanism, so these
@@ -97,6 +100,9 @@ Examples:
 # Update only the distribution's native packages
 ./linux/update-everything.sh --system-only
 
+# Update only Snap, Flatpak, and Homebrew, leaving system packages alone
+./linux/update-everything.sh --skip-system-update
+
 # Install updates without automatic cache or unused-package cleanup
 ./linux/update-everything.sh --no-cleanup
 
@@ -114,6 +120,9 @@ Examples:
 2. Reads `/etc/os-release` where available.
 3. Detects the native system package manager associated with the distribution.
 4. Requests administrator privileges using `sudo` or `doas` when required.
+   With `--skip-system-update`, steps 3 to 7 are skipped and no privileges are
+   requested up front; Snap and system-wide Flatpak updates still elevate, so
+   `sudo` or `doas` may prompt when the script reaches them.
 5. Refreshes package metadata and installs available updates. APT uses
    `upgrade --with-new-pkgs`, which may add required dependencies but does not
    remove installed packages.
@@ -192,7 +201,7 @@ Scoop refuses to run elevated, because it installs into the profile of the user 
 | Option | Effect |
 |---|---|
 | `-SystemOnly` | Install Windows updates only, and run no application updater. |
-| `-SkipWindowsUpdate` | Run the application updaters only. |
+| `-SkipWindowsUpdate` | Run the application updaters only. `-SkipSystemUpdate` is an alias. |
 | `-IncludeDrivers` | Also install driver updates offered by Windows Update. |
 | `-NoCleanup` | Skip Scoop's old-version and download-cache cleanup commands. Other managers retain their own built-in behavior. |
 | `-PatchMyPCPath <path>` | Full path to `PatchMyPC.exe`, for a portable copy the script does not find on its own. |
@@ -431,6 +440,8 @@ Always keep current backups of important data before applying system-wide update
 | `0` | Every detected update operation completed successfully |
 | `1` | At least one detected update operation failed |
 | `2` | Invalid or conflicting script options, or unsupported operating system |
+| `130` | Interrupted by `SIGINT` (Ctrl-C) — Linux and macOS |
+| `143` | Interrupted by `SIGTERM` — Linux and macOS |
 
 Individual package-manager commands may return other statuses internally. The script records those failures, continues where possible, and returns `1` after printing its summary.
 
@@ -438,6 +449,22 @@ Updates that were deliberately held back — a phased APT package, or a macOS
 release above the configured ceiling — are named in the summary and do not by
 themselves change the exit code. Skipped managers do not either. Only a failed
 operation produces `1`.
+
+On Linux and macOS, an interrupted run still prints its summary: what had
+completed, failed, or been held back, the manager that was running when the
+signal arrived, and a note that nothing after it was started. The script then
+exits `130` for `SIGINT` or `143` for `SIGTERM`, whatever had failed before.
+Bash runs the handler only once the running command exits: Ctrl-C reaches that
+command too, so it normally stops at once, but `SIGTERM` sent to the script
+alone waits for the current command to finish. The interrupted manager may be
+partly applied, so run the script again. Press Ctrl-C a second time to skip the
+summary.
+
+On Windows, Ctrl+C stops the script without a summary, and the exit code is
+then set by PowerShell rather than by the script. A blocking Windows Update
+call cannot be interrupted until it returns, and Windows PowerShell 5.1 does
+not let a script report an interruption reliably, so `130` and `143` are not
+used there.
 
 ## Reboot notices
 
