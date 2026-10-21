@@ -8,6 +8,8 @@ A small collection of scripts that updates the operating system and supported pa
 
 The project is intended for people who want a straightforward way to install all available software updates without remembering a different set of commands for every platform or Linux distribution.
 
+Project website: <https://blueangelcpt.github.io/update-everything/>
+
 ## Current status
 
 | Platform | Script | Status |
@@ -472,6 +474,57 @@ updates, or clean up packages. A dry run is a preview of orchestration, not a
 guarantee that a later live update will succeed.
 
 Always keep current backups of important data before applying system-wide updates.
+
+## Start-up banner
+
+Every script opens with the Update Everything logo as ASCII art, next to the
+version, the tagline, and the detected operating system (with `dry run`
+appended in dry-run mode). In colour, the ring's four arcs are light blue,
+blue, green and grey around a green tick:
+
+```text
+                  %
+           @@@@@@@@  @@@@@@@%
+        @@@@@@@@@@@  @%%%%@@@@@#
+      @@@@@@@@@@@@@% @@@@@@%%%@@@@
+     @@@@@@@@@@          @@@@@%%@@@
+    @@@@@@@@                @@@@@@@+
+  @@   =@@                    @@    @@
+  @@@@@@                  @@    @@@@@@
+ @@%%%@@                @@@@@   @@@@@@@
+ @%%%%@@              @@@%@@%   :@@@@@@    │ Update Everything 2.0.0
+ @%%%%@    @@@@     *@@%@@@      @@@@@@    │ Everything, carefully.
+ @%%%%@    @@@@@@  @@@@@@        @@@@@@    │ Ubuntu 24.04 LTS · dry run
+ @%%%%@@    @@@%@@@@@@@          @@@@@@
+ @@%%%@@      @@@%%@@@          @@@@@@@
+  @@%%%@@       @@@@           @@@@@@@
+  @@@%%%@@                    @@@@@@@@
+   @@@%%%@@@                @@@@@@@@@
+     @@%%%%@@@@          @@@@@@@@@@
+      @@@@%%%%@@@@@@=@@@@@@@@@@@@@
+        @@@@@%%%%%@  @@@@@@@@@@@
+           @@@@@@@@  @@@@@@@@
+                  @  @
+```
+
+The banner adapts to where it is printed:
+
+- A terminal narrower than 72 columns gets a short form instead: the name and
+  version, the tagline, and the subtitle, without the logo.
+- A subtitle too long for the terminal is shortened with `...` rather than
+  wrapped. The next line of output names the operating system in full.
+- On Linux and macOS, a locale that is not UTF-8 still gets the logo, with `|`
+  and `-` in place of the divider and the middle dot. In a narrow terminal it
+  gets a single plain-ASCII line.
+- Colour is used only in a terminal. Setting
+  [`NO_COLOR`](https://no-color.org) turns it off on every platform, and the
+  Linux and macOS scripts also omit it when `TERM` is `dumb` or output is
+  redirected.
+- Terminals that advertise `COLORTERM=truecolor` get the brand's exact 24-bit
+  colours. Other terminals get the nearest 256-colour equivalents. On Windows,
+  consoles that process escape sequences, as Windows 10 and later do, get the
+  24-bit colours, and older consoles get the nearest console colours.
+- `--help` and `--version` (`-ShowVersion` on Windows) print no banner.
 
 ## Exit codes
 
