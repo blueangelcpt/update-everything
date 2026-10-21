@@ -483,7 +483,7 @@ expect_interrupted_run() {
     output="$(main 2>&1)"; status=$?
     assert_status "$expected_status" "$status" || return 1
     assert_contains "$output" "Received SIG$signal" || return 1
-    assert_contains "$output" 'Update Everything 2.0.0' || return 1
+    assert_contains "$output" "Update Everything $SCRIPT_VERSION" || return 1
     assert_contains "$output" '==> Summary' || return 1
     assert_contains "$output" '- macOS updates' || return 1
     assert_contains "$output" "Interrupted by SIG$signal:" || return 1

@@ -384,7 +384,7 @@ Describe 'update-everything Windows updater' {
             $bar = [string][char]0x2502
             $text = $script:BannerText.ToString()
             $lines = $text -split "`n"
-            $text | Should -BeLikeExactly "*$bar Update Everything 2.0.0*"
+            $text | Should -BeLikeExactly "*$bar Update Everything $ScriptVersion*"
             $text | Should -BeLikeExactly "*$bar Everything, carefully.*"
             $text | Should -BeLikeExactly "*$bar Windows 11 Pro 23H2 - dry run*"
             $lines.Count | Should -Be 24
@@ -417,7 +417,7 @@ Describe 'update-everything Windows updater' {
             Mock Get-BannerColorMode { 'None' }
             Mock Get-ConsoleWidth { 71 }
             Show-Banner -Subtitle 'Windows 11'
-            $expected = ([string][char]0x25CF) + " Update Everything 2.0.0`n  Everything, carefully.`n  Windows 11`n`n"
+            $expected = ([string][char]0x25CF) + " Update Everything $ScriptVersion`n  Everything, carefully.`n  Windows 11`n`n"
             $script:BannerText.ToString() | Should -BeExactly $expected
         }
 

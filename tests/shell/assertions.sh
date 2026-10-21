@@ -83,7 +83,7 @@ check_start_up_banner() {
     banner_locale_is_utf8() { return 0; }
 
     output="$(COLUMNS=100 print_banner "$subtitle" 'dry run')"
-    assert_contains "$output" '│ Update Everything 2.0.0' || return 1
+    assert_contains "$output" "│ Update Everything $SCRIPT_VERSION" || return 1
     assert_contains "$output" '│ Everything, carefully.' || return 1
     assert_contains "$output" "│ $subtitle · dry run" || return 1
     assert_contains "$output" '      @@@@%%%%@@@@@@=@@@@@@@@@@@@@' || return 1
@@ -107,7 +107,7 @@ check_start_up_banner() {
     assert_equal '' "$long_lines" || return 1
 
     output="$(COLUMNS=71 print_banner "$subtitle")"
-    assert_contains "$output" '● Update Everything 2.0.0' || return 1
+    assert_contains "$output" "● Update Everything $SCRIPT_VERSION" || return 1
     assert_contains "$output" "  $subtitle" || return 1
     assert_not_contains "$output" '│' || return 1
 
@@ -118,12 +118,12 @@ check_start_up_banner() {
     # shellcheck disable=SC2317
     banner_locale_is_utf8() { return 1; }
     output="$(COLUMNS=100 print_banner "$subtitle" 'dry run')"
-    assert_contains "$output" '| Update Everything 2.0.0' || return 1
+    assert_contains "$output" "| Update Everything $SCRIPT_VERSION" || return 1
     assert_contains "$output" "| $subtitle - dry run" || return 1
     assert_equal 0 "$(non_ascii_bytes "$output")" || return 1
 
     output="$(COLUMNS=71 print_banner "$subtitle" 'dry run')"
-    assert_equal "[ok] Update Everything 2.0.0 - Everything, carefully.
+    assert_equal "[ok] Update Everything $SCRIPT_VERSION - Everything, carefully.
      $subtitle - dry run" "$output" || return 1
 
     output="$(COLUMNS=40 print_banner "$subtitle with a name long enough to need shortening" 'dry run')"
