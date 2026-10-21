@@ -20,6 +20,13 @@ tests/run-shell-tests.sh
 tests/check-versions.sh
 ```
 
+A change to Linux manager detection should also pass the container dry run for
+the affected distribution, which needs Docker and is otherwise left to CI:
+
+```bash
+tests/container-dry-run.sh debian:stable apt
+```
+
 The macOS script and its tests must also pass Apple's GNU Bash 3.2. Avoid
 associative arrays and other post-3.2 features, and keep every whole-array
 expansion behind an element-count guard, because `set -u` rejects expanding an

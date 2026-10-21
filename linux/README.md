@@ -53,9 +53,20 @@ APT arguments, kept-back package parsing, failure isolation, summaries, quoted
 paths, dry runs, and reboot notices. Every test replaces command discovery and
 execution with shell functions, so no test can reach a real package manager.
 
-CI does not run live package updates, and no distribution has been verified
-against a live update as part of the release process. Distribution-specific
-behavior still needs validation on disposable or backed-up installations.
+CI also runs `update-everything.sh --dry-run` as an unprivileged user inside
+digest-pinned containers of Debian stable, Ubuntu 24.04, Fedora, Rocky Linux 9,
+openSUSE Tumbleweed, Arch Linux, Alpine, Void Linux, and Gentoo, and fails
+unless each one detects its expected manager (`apt`, `dnf5`, `dnf`, `zypper`,
+`pacman`, `apk`, `xbps`, or `emerge`) and exits 0. This verifies detection and
+dry-run planning against genuine `/etc/os-release` files and binary locations;
+`tests/container-dry-run.sh` runs the same check locally with Docker. NixOS,
+rpm-ostree, transactional-update, Solus, Clear Linux, Slackware, and Mageia
+have no container leg and are covered only by mocks.
+
+CI does not run live package updates: the containers are offline during the
+dry run and no mutating command is executed. No distribution has been verified
+against a live update as part of the release process, so distribution-specific
+update behavior still needs validation on disposable or backed-up installations.
 
 See the [repository README](../README.md) for the full manager list, safety
 boundaries, exit-code contract, and contribution instructions.
