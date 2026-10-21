@@ -1,6 +1,6 @@
 # Linux updater
 
-`update-everything.sh` version 2.0.0 updates one detected native system package
+`update-everything.sh` version 2.1.0 updates one detected native system package
 manager, then Snap, user and system Flatpak installations, and Linuxbrew when
 they are present. One manager failing does not stop unrelated managers.
 

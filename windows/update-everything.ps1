@@ -94,7 +94,7 @@ param(
 Set-StrictMode -Version 3.0
 
 $ScriptName = $MyInvocation.MyCommand.Name
-$ScriptVersion = '2.0.0'
+$ScriptVersion = '2.1.0'
 
 # Progress bars corrupt the output when an updater writes to the console
 # while the script is also writing to it.

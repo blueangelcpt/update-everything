@@ -21,7 +21,7 @@ test_help_and_version() {
 
     output="$(main --version 2>&1)"; status=$?
     assert_status 0 "$status" || return 1
-    assert_contains "$output" '2.0.0'
+    assert_contains "$output" '2.1.0'
 }
 
 test_invalid_option_and_platform() {

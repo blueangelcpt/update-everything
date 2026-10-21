@@ -1,9 +1,10 @@
 # macOS updater
 
-`update-everything.sh` version 2.0.0 installs available macOS updates, then
+`update-everything.sh` version 2.1.0 installs available macOS updates, then
 updates every supported application manager installed on the Mac. It will not
-upgrade a Mac to macOS 26 or later by default, and it will not perform any major
-macOS upgrade unless you ask for one.
+perform a major macOS upgrade unless you ask for one, and on a Mac running
+OpenCore Legacy Patcher it will not install a release that the installed OCLP
+version does not support.
 
 ## What it updates
 
@@ -19,31 +20,46 @@ A manager that is not installed is reported as skipped, not as a failure. One ma
 
 ## Version guard
 
-Major upgrades to macOS 26 and later are held back by default. The script reads
-every update that `softwareupdate` offers, works out the macOS release each one
-leads to, and installs the approved ones by label. It never runs
-`softwareupdate --install --all`, so a held-back release cannot be installed by
-accident.
+The script reads every update that `softwareupdate` offers, works out the macOS
+release each one leads to, and installs the approved ones by label. It never
+runs `softwareupdate --install --all`, so a held-back release cannot be
+installed by accident.
 
-Three rules decide what is held back:
+On a Mac without OpenCore Legacy Patcher there is no version ceiling. Two rules
+decide what is held back:
 
-1. Any major-upgrade target newer than the maximum, which is macOS 25 by
-   default, is held back. Raise it with `--max-macos-major` only after a newer
-   release has been verified. Maintenance updates for the installed release
-   remain eligible even when that Mac is already above the ceiling.
-2. A major upgrade, meaning any release newer than the one currently installed, is held back unless `--allow-major-upgrade` is given.
-3. On a Mac running OpenCore Legacy Patcher, a major upgrade is always held back, even with `--allow-major-upgrade`.
+1. A major upgrade, meaning any release newer than the one currently
+   installed, is held back unless `--allow-major-upgrade` is given.
+2. An offer for a release older than the installed one is always held back.
 
-Updates within the installed release, such as 15.6 to 15.6.1, and non-macOS updates such as Safari and the Command Line Tools, are installed normally. Everything held back is named in the summary along with the reason.
+On a Mac running OpenCore Legacy Patcher, the installed OCLP version adds a
+ceiling that `--allow-major-upgrade` cannot cross:
 
-The maximum applies to upgrades, not maintenance of the release already
-installed. If a Mac already runs a release above the configured maximum,
-updates within that same release remain eligible while any further upgrade is
-held back.
+| Installed OCLP | Highest macOS release installed |
+|---|---|
+| 3.x and newer | macOS 26 Tahoe |
+| 2.5.x and older | macOS 15 Sequoia |
+| Version not confirmed | macOS 15 Sequoia, assumed |
+
+macOS has no releases 16 to 25, so the supported numbers jump from 15 straight
+to 26. An OCLP generation newer than 3.x keeps the macOS 26 ceiling until it
+has been verified; raise it with `--max-macos-major` in the meantime.
+
+Updates within the installed release, such as 15.6 to 15.6.1, and non-macOS
+updates such as Safari and the Command Line Tools, are installed normally on
+every Mac. Everything held back is named in the summary along with the reason.
+
+The ceiling applies to upgrades, not to maintenance of the release already
+installed. If a Mac already runs a release above its ceiling, updates within
+that same release remain eligible while any further upgrade is held back.
 
 ## OpenCore Legacy Patcher
 
-The script looks for OCLP in several independent places, because any one of them can be absent depending on how the Mac was set up:
+OCLP exists only for Intel Macs that Apple no longer supports, so a Mac on
+Apple silicon never looks for it and never mentions it.
+
+On an Intel Mac the script looks for OCLP in several independent places,
+because any one of them can be absent depending on how the Mac was set up:
 
 - `/System/Library/CoreServices/OpenCore-Legacy-Patcher.plist`
 - `/System/Library/CoreServices/OpenCore-Patcher.app`
@@ -52,11 +68,38 @@ The script looks for OCLP in several independent places, because any one of them
 - The `OCLP-Version` NVRAM variable
 - An `opencore-version` entry in the booted device tree
 
+OCLP is updated in [three separate steps](https://github.com/dortania/OpenCore-Legacy-Patcher/blob/main/docs/FAQ.md#how-do-i-make-sure-im-all-up-to-date)
+— the application, then the bootloader, then the root patches — so a Mac can
+have a new application while it still boots through an old bootloader. The
+script reads each component's version separately:
+
+| Component | Read from |
+|---|---|
+| Application | `CFBundleShortVersionString` of `/Applications/OpenCore-Patcher.app`, else of `/System/Library/CoreServices/OpenCore-Patcher.app` |
+| Active bootloader | The `OCLP-Version` NVRAM variable, which OCLP writes into the EFI configuration when it builds the bootloader |
+| Root patches | Only the `OpenCore Legacy Patcher` key of `/System/Library/CoreServices/OpenCore-Legacy-Patcher.plist`; that file also records the patched macOS version and other version numbers, which are never read |
+
+The **oldest** of these sets the OCLP version used for the ceiling, so a 3.x
+application over a 2.5.x bootloader is treated as 2.5.x. The version counts as
+**not confirmed** — and the macOS 15 ceiling applies — unless both the active
+bootloader and the application can be read: the Mac boots through the first,
+and only the second can re-apply root patches after an upgrade. A Mac that has
+never needed root patches records none, and that component is then ignored.
+
+The output names every component's version and which one set the ceiling, and
+warns when they differ, because that means an OCLP update was started but not
+finished.
+
 When OCLP is detected, the script:
 
-- Refuses every major macOS upgrade, so that upgrades stay a deliberate decision made through OCLP.
+- Holds back any macOS release newer than its oldest OCLP component supports,
+  even with `--allow-major-upgrade`, and holds back every upgrade past macOS 15
+  when the OCLP version cannot be confirmed.
 - Warns that OCLP itself should be updated before macOS updates are installed, so that the installed version supports the release being applied.
 - Prints a reminder after installing a macOS update that root patches are removed by macOS updates and must be re-applied in OpenCore Legacy Patcher after the restart.
+
+When OCLP is not detected, nothing about it is printed, no ceiling is applied,
+and `--max-macos-major` is not listed in the help text.
 
 Minor macOS updates are still installed on an OCLP Mac, because they are the security updates for the release already running. They do remove root patches until OCLP re-applies them, so use `--skip-system-update` if you would rather update applications now and schedule macOS updates for a time when you can re-patch and restart.
 
@@ -76,8 +119,8 @@ Run the script as your normal user. It requests `sudo` only for the commands tha
 | `--skip-system-update` | Update only the additional managers. |
 | `--no-cleanup` | Do not remove cached downloads or unused packages. |
 | `--greedy-casks` | Also upgrade Homebrew casks that carry their own updater. |
-| `--allow-major-upgrade` | Permit a major macOS upgrade, up to the supported maximum. Refused on an OCLP Mac. |
-| `--max-macos-major N` | Highest target for a major macOS upgrade (default `25`). |
+| `--allow-major-upgrade` | Permit a major macOS upgrade. On an OCLP Mac it cannot cross the OCLP ceiling. |
+| `--max-macos-major N` | Highest major macOS release to install on this Mac, overriding what the installed OCLP version supports. Listed in `--help` only on a Mac where a ceiling applies. |
 | `--dry-run` | List and evaluate updates without installing or cleaning up anything. |
 | `-h`, `--help` | Show the help text. |
 | `-v`, `--version` | Show the script version. |
@@ -94,8 +137,11 @@ Examples:
 # Also refresh casks that normally update themselves
 ./update-everything.sh --greedy-casks
 
-# Allow macOS 26 once it has been verified on this Mac
-./update-everything.sh --allow-major-upgrade --max-macos-major 26
+# Allow a major upgrade to whatever release Apple offers this Mac
+./update-everything.sh --allow-major-upgrade
+
+# On an OCLP Mac, allow macOS 27 once that OCLP version has been verified
+./update-everything.sh --allow-major-upgrade --max-macos-major 27
 
 # Evaluate offered labels without making changes or prompting for sudo
 ./update-everything.sh --dry-run

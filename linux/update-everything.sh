@@ -20,7 +20,7 @@ set -uo pipefail
 IFS=$'\n\t'
 
 readonly SCRIPT_NAME="${0##*/}"
-readonly SCRIPT_VERSION="2.0.0"
+readonly SCRIPT_VERSION="2.1.0"
 readonly SYSTEM_COMMAND_PATH="/run/current-system/sw/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 
 DO_CLEANUP=1

@@ -1,6 +1,6 @@
 # Windows updater
 
-`update-everything.ps1` version 2.0.0 installs available Windows updates, then
+`update-everything.ps1` version 2.1.0 installs available Windows updates, then
 runs every supported application updater that is installed on the machine.
 Each updater runs in its own silent or unattended mode, so the script never
 stops to ask a question.
