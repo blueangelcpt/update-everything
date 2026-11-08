@@ -505,6 +505,209 @@ test_start_up_banner() {
     check_start_up_banner 'macOS 14.6'
 }
 
+# A real directory whose write bit is cleared stands in for an application
+# another installer placed as root: Homebrew cannot rename it into the
+# Caskroom either way, and the fixture needs no privileges. The three casks
+# cover the shapes a Caskroom entry can have.
+CASK_FIXTURE_ROOT=""
+
+make_cask_fixture() {
+    local root="$1"
+
+    mkdir -p "$root/Applications/Blocked.app/Contents" \
+        "$root/Applications/Stale.app/Contents" \
+        "$root/Applications/Fine.app/Contents" \
+        "$root/Caskroom/blocked/1.0" \
+        "$root/Caskroom/stale/1.0/Stale.app/Contents" \
+        "$root/Caskroom/fine/1.0"
+
+    # A healthy install leaves a Caskroom symlink to the application; the
+    # stale cask has a real copy there instead.
+    ln -s "$root/Applications/Blocked.app" "$root/Caskroom/blocked/1.0/Blocked.app"
+    ln -s "$root/Applications/Fine.app" "$root/Caskroom/fine/1.0/Fine.app"
+
+    chmod a-w "$root/Applications/Blocked.app" "$root/Applications/Stale.app"
+}
+
+# The stubs read CASK_FIXTURE_ROOT rather than a caller's local, so that they
+# do not depend on where they are called from.
+stub_cask_fixture_commands() {
+    CASK_FIXTURE_ROOT="$1"
+
+    # Invoked indirectly through classify_outdated_casks.
+    # shellcheck disable=SC2317
+    brew() {
+        [[ "$1 $2" == 'list --cask' ]] || return 0
+        case "$3" in
+            blocked) printf '%s\n' "$CASK_FIXTURE_ROOT/Caskroom/blocked/1.0/Blocked.app" ;;
+            stale) printf '%s\n' "$CASK_FIXTURE_ROOT/Caskroom/stale/1.0/Stale.app" ;;
+            fine) printf '%s\n' "$CASK_FIXTURE_ROOT/Caskroom/fine/1.0/Fine.app" ;;
+        esac
+    }
+    # shellcheck disable=SC2317
+    outdated_cask_tokens() { printf 'blocked\nstale\nfine\n'; }
+    # The real helper shifts the command name off before running it.
+    # shellcheck disable=SC2317
+    run_system_command() {
+        local command_name="$1"
+        shift
+        case "$command_name" in
+            readlink) /usr/bin/readlink "$@" ;;
+            stat) /usr/bin/stat "$@" ;;
+        esac
+    }
+    CASK_APPLICATION_DIRS=("$CASK_FIXTURE_ROOT/Applications")
+}
+
+test_unreplaceable_cask_application_is_held_back() {
+    local root output owner status=0
+    local saved_run_system_command saved_outdated_cask_tokens
+    saved_run_system_command="$(declare -f run_system_command)"
+    saved_outdated_cask_tokens="$(declare -f outdated_cask_tokens)"
+
+    root="$(mktemp -d)"
+    make_cask_fixture "$root"
+    stub_cask_fixture_commands "$root"
+    owner="$(/usr/bin/stat -f '%Su' "$root/Applications/Blocked.app")"
+
+    # The buckets are filled in the current shell, so the output is captured
+    # from one call and the resulting state read from the next.
+    HELD_BACK=()
+    output="$(classify_outdated_casks 2>&1)"
+    HELD_BACK=()
+    classify_outdated_casks >/dev/null 2>&1
+
+    while :; do
+        # A symlinked application and a stale Caskroom copy are both found.
+        assert_equal 2 "${#BLOCKED_CASKS[@]}" || { status=1; break; }
+        assert_equal 'blocked' "${BLOCKED_CASKS[0]}" || { status=1; break; }
+        assert_equal 'stale' "${BLOCKED_CASKS[1]}" || { status=1; break; }
+        assert_equal 1 "${#UPGRADABLE_CASKS[@]}" || { status=1; break; }
+        assert_equal 'fine' "${UPGRADABLE_CASKS[0]}" || { status=1; break; }
+
+        assert_contains "$output" 'Holding back the blocked cask' || { status=1; break; }
+        assert_contains "$output" 'cannot move it aside' || { status=1; break; }
+        assert_not_contains "$output" 'Holding back the fine cask' || { status=1; break; }
+
+        # The Caskroom symlink and the install directory name the same
+        # application, so it is held back once rather than twice.
+        assert_equal 2 "${#HELD_BACK[@]}" || { status=1; break; }
+        assert_contains "${HELD_BACK[0]}" 'Homebrew cask blocked' || { status=1; break; }
+        assert_contains "${HELD_BACK[0]}" "$root/Applications/Blocked.app" || { status=1; break; }
+        assert_contains "${HELD_BACK[0]}" "belongs to $owner" || { status=1; break; }
+        assert_contains "${HELD_BACK[0]}" 'rename it within' || { status=1; break; }
+        assert_contains "${HELD_BACK[0]}" 'as an administrator' || { status=1; break; }
+        assert_contains "${HELD_BACK[1]}" 'Homebrew cask stale' || { status=1; break; }
+        break
+    done
+
+    chmod u+w "$root/Applications/Blocked.app" "$root/Applications/Stale.app"
+    rm -rf "$root"
+    CASK_FIXTURE_ROOT=""
+    unset -f brew
+    # Restore the script's own helpers rather than deleting them, which would
+    # leave later tests calling a function that no longer exists.
+    eval "$saved_run_system_command"
+    eval "$saved_outdated_cask_tokens"
+    return "$status"
+}
+
+test_write_permission_comes_from_ownership_and_mode() {
+    local status=0
+    local saved_run_system_command
+    saved_run_system_command="$(declare -f run_system_command)"
+
+    # Invoked indirectly through user_can_write_by_mode.
+    # shellcheck disable=SC2317
+    run_system_command() {
+        [[ "$1" == stat ]] || return 1
+        printf '%s\n' "$STAT_REPLY"
+    }
+
+    while :; do
+        # The owner's bit decides for an application this user owns.
+        STAT_REPLY="$EUID 20 755"
+        user_can_write_by_mode /x || { fail 'owner write bit ignored'; status=1; break; }
+        STAT_REPLY="$EUID 20 555"
+        user_can_write_by_mode /x && { fail 'owner without write bit accepted'; status=1; break; }
+
+        # A group this user belongs to decides next.
+        if ((${#GROUPS[@]})); then
+            STAT_REPLY="999999 ${GROUPS[0]} 705"
+            user_can_write_by_mode /x && { fail 'group without write bit accepted'; status=1; break; }
+            STAT_REPLY="999999 ${GROUPS[0]} 775"
+            user_can_write_by_mode /x || { fail 'group write bit ignored'; status=1; break; }
+        fi
+
+        # Otherwise the other bit decides, which is the root-owned 755 case
+        # Homebrew cannot replace.
+        STAT_REPLY="999999 999998 755"
+        user_can_write_by_mode /x && { fail 'root-owned 755 treated as writable'; status=1; break; }
+        STAT_REPLY="999999 999998 777"
+        user_can_write_by_mode /x || { fail 'world-writable treated as unwritable'; status=1; break; }
+
+        # Setuid and similar leading digits must not shift which digit is
+        # read for each class.
+        STAT_REPLY="999999 999998 1755"
+        user_can_write_by_mode /x && { fail 'leading mode digit shifted the others'; status=1; break; }
+
+        # Output that cannot be read leaves the previous behaviour of letting
+        # Homebrew try, rather than holding a cask back on a guess.
+        STAT_REPLY="not stat output"
+        user_can_write_by_mode /x || { fail 'unreadable stat output held a cask back'; status=1; break; }
+        break
+    done
+
+    unset STAT_REPLY
+    eval "$saved_run_system_command"
+    return "$status"
+}
+
+test_a_blocked_cask_does_not_stop_the_others() {
+    local output status=0
+    local saved_classify saved_run_brew_command
+    saved_classify="$(declare -f classify_outdated_casks)"
+    saved_run_brew_command="$(declare -f run_brew_command)"
+
+    # Invoked indirectly through update_homebrew.
+    # shellcheck disable=SC2317
+    run_brew_command() { local IFS=' '; printf 'BREW %s\n' "$*"; }
+    DO_GREEDY_CASKS=1; DO_CLEANUP=0; DRY_RUN=0
+    is_root() { return 1; }
+
+    while :; do
+        # With a blocked cask, the rest are upgraded by name, not in bulk.
+        # shellcheck disable=SC2317
+        classify_outdated_casks() { BLOCKED_CASKS=(blocked); UPGRADABLE_CASKS=(fine other); }
+        output="$(update_homebrew 2>&1)"
+        assert_contains "$output" 'BREW upgrade --formula' || { status=1; break; }
+        assert_contains "$output" 'BREW upgrade --cask --greedy fine other' || { status=1; break; }
+        assert_not_contains "$output" 'BREW upgrade'$'\n' || { status=1; break; }
+
+        # Every outdated cask blocked still upgrades the formulae.
+        # shellcheck disable=SC2317
+        classify_outdated_casks() { BLOCKED_CASKS=(blocked); UPGRADABLE_CASKS=(); }
+        output="$(update_homebrew 2>&1)"
+        assert_contains "$output" 'BREW upgrade --formula' || { status=1; break; }
+        assert_contains "$output" 'only formulae were upgraded' || { status=1; break; }
+        assert_not_contains "$output" '--cask' || { status=1; break; }
+
+        # With nothing blocked the bulk upgrade is unchanged.
+        # shellcheck disable=SC2317
+        classify_outdated_casks() { BLOCKED_CASKS=(); UPGRADABLE_CASKS=(fine); }
+        output="$(update_homebrew 2>&1)"
+        assert_contains "$output" 'BREW upgrade'$'\n' || { status=1; break; }
+        assert_contains "$output" 'BREW upgrade --cask --greedy' || { status=1; break; }
+        assert_not_contains "$output" '--formula' || { status=1; break; }
+        assert_not_contains "$output" 'greedy fine' || { status=1; break; }
+        break
+    done
+
+    eval "$saved_classify"
+    eval "$saved_run_brew_command"
+    return "$status"
+}
+
 run_test 'help, version, invalid and conflicting options' test_help_version_and_invalid_options
 run_test 'supported platform and root guards' test_platform_and_root_guards
 run_test 'complete macOS/OCLP release decision matrix' test_release_decision_matrix
@@ -524,6 +727,9 @@ run_test 'successful macOS update sets restart and OCLP notice' test_successful_
 run_test 'dry run makes no installed/restart claims' test_dry_run_never_marks_update_installed
 run_test 'malformed softwareupdate output fails closed' test_malformed_softwareupdate_output_fails_closed
 run_test 'held-back summary and manager failure isolation' test_held_back_summary_and_failure_isolation
+run_test 'a cask application Homebrew cannot replace is held back' test_unreplaceable_cask_application_is_held_back
+run_test 'write permission comes from ownership and mode' test_write_permission_comes_from_ownership_and_mode
+run_test 'a blocked cask does not stop the other upgrades' test_a_blocked_cask_does_not_stop_the_others
 run_test 'SIGINT prints the summary and exits 130' test_sigint_prints_summary_and_exits_130
 run_test 'SIGTERM prints the summary and exits 143' test_sigterm_prints_summary_and_exits_143
 run_test 'start-up banner forms, alignment and colour' test_start_up_banner

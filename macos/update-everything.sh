@@ -90,6 +90,19 @@ SKIPPED=()
 HELD_BACK=()
 PLANNED=()
 
+# The outdated Homebrew casks split into those whose application Homebrew can
+# replace and those whose application it cannot, filled in by
+# classify_outdated_casks.
+BLOCKED_CASKS=()
+UPGRADABLE_CASKS=()
+
+# Where casks install their applications. The tests replace this, because they
+# cannot write to /Applications.
+CASK_APPLICATION_DIRS=("/Applications")
+if [[ -n "${HOME:-}" ]]; then
+    CASK_APPLICATION_DIRS+=("$HOME/Applications")
+fi
+
 usage() {
     cat <<USAGE
 Usage: $SCRIPT_NAME [options]
@@ -927,6 +940,147 @@ update_mas() {
     run_command mas upgrade
 }
 
+# Homebrew replaces a cask's application by first moving the installed bundle
+# into the Caskroom as a backup, which renames it into a different parent
+# directory. macOS allows that only when the bundle itself is writable,
+# because renaming a directory rewrites its ".." entry, so an application that
+# another installer placed as root cannot be replaced by Homebrew at all. The
+# attempt downloads the new version and then fails with a message naming the
+# backup path, which says nothing about the ownership that caused it, and the
+# one cask fails every formula and cask upgraded in the same command. These
+# helpers find such applications first, so the cask can be held back by name.
+#
+# The lookups only read, so they run unchanged in a dry run.
+cask_application_candidates() {
+    local token="$1"
+    local entry name target directory
+
+    while IFS= read -r entry; do
+        [[ "$entry" == *.app ]] || continue
+        name="${entry##*/}"
+
+        if [[ -L "$entry" ]]; then
+            # A cask that installed cleanly leaves a symlink in the Caskroom
+            # pointing at the application, which finds it wherever it went.
+            target="$(run_system_command readlink "$entry" 2>/dev/null)"
+            if [[ -n "$target" ]]; then
+                printf '%s\n' "$target"
+            fi
+        else
+            # A stale copy of the application left in the Caskroom in place of
+            # that symlink has to be replaceable as well.
+            printf '%s\n' "$entry"
+        fi
+
+        # There may be no symlink to follow at all, so also look wherever
+        # casks install applications.
+        if ((${#CASK_APPLICATION_DIRS[@]})); then
+            for directory in "${CASK_APPLICATION_DIRS[@]}"; do
+                printf '%s\n' "$directory/$name"
+            done
+        fi
+    done < <(brew list --cask "$token" 2>/dev/null)
+}
+
+path_owner() {
+    run_system_command stat -f '%Su' "$1" 2>/dev/null
+}
+
+# access(2), which [[ -w ]] uses, can refuse an application bundle for reasons
+# that have nothing to do with its permissions, such as the privacy
+# protection macOS applies to applications it manages. That would hold back a
+# cask Homebrew could in fact replace, so an unwritable answer is confirmed
+# against the ownership and mode, which say what the filesystem itself allows.
+# An unreadable answer counts as writable, which leaves the previous behaviour
+# of letting Homebrew try.
+user_can_write_by_mode() {
+    local path="$1"
+    local fields owner_uid group_gid mode candidate_gid
+
+    fields="$(run_system_command stat -f '%u %g %Lp' "$path" 2>/dev/null)" || return 0
+    owner_uid="${fields%% *}"
+    fields="${fields#* }"
+    group_gid="${fields%% *}"
+    mode="${fields##* }"
+
+    case "$owner_uid$group_gid$mode" in
+        '' | *[!0-9]*) return 0 ;;
+    esac
+    case "$mode" in
+        *[!0-7]*) return 0 ;;
+    esac
+
+    if (( owner_uid == EUID )); then
+        (( (mode / 100) % 10 & 2 ))
+        return $?
+    fi
+
+    if ((${#GROUPS[@]})); then
+        for candidate_gid in "${GROUPS[@]}"; do
+            if (( candidate_gid == group_gid )); then
+                (( (mode / 10) % 10 & 2 ))
+                return $?
+            fi
+        done
+    fi
+
+    (( mode % 10 & 2 ))
+}
+
+outdated_cask_tokens() {
+    if (( DO_GREEDY_CASKS )); then
+        brew outdated --cask --greedy --quiet 2>/dev/null
+    else
+        brew outdated --cask --quiet 2>/dev/null
+    fi
+}
+
+classify_outdated_casks() {
+    BLOCKED_CASKS=()
+    UPGRADABLE_CASKS=()
+
+    local token candidate owner blocked seen duplicate
+    local checked=()
+
+    while IFS= read -r token; do
+        [[ -n "$token" ]] || continue
+
+        blocked=0
+        checked=()
+        while IFS= read -r candidate; do
+            [[ -d "$candidate" ]] || continue
+
+            # One application can be reached by more than one candidate path,
+            # and it should be reported once.
+            duplicate=0
+            if ((${#checked[@]})); then
+                for seen in "${checked[@]}"; do
+                    if [[ "$seen" == "$candidate" ]]; then
+                        duplicate=1
+                        break
+                    fi
+                done
+            fi
+            (( duplicate )) && continue
+            checked+=("$candidate")
+
+            [[ -w "$candidate" ]] && continue
+            user_can_write_by_mode "$candidate" && continue
+
+            blocked=1
+            owner="$(path_owner "$candidate")"
+            warn "Holding back the $token cask: $candidate belongs to ${owner:-another user}, so Homebrew cannot move it aside to replace it."
+            HELD_BACK+=("Homebrew cask $token ($candidate belongs to ${owner:-another user}, so Homebrew cannot move it aside; rename it within ${candidate%/*}, run this script again, then delete the renamed copy as an administrator)")
+        done < <(cask_application_candidates "$token")
+
+        if (( blocked )); then
+            BLOCKED_CASKS+=("$token")
+        else
+            UPGRADABLE_CASKS+=("$token")
+        fi
+    done < <(outdated_cask_tokens)
+}
+
 update_homebrew() {
     if is_root; then
         error "Homebrew must not be run as root. Run $SCRIPT_NAME as your normal user instead of with sudo."
@@ -935,13 +1089,31 @@ update_homebrew() {
 
     run_brew_command update || return 1
 
-    # Recent Homebrew upgrades outdated formulae and casks together.
-    run_brew_command upgrade || return 1
+    classify_outdated_casks
 
-    if (( DO_GREEDY_CASKS )); then
-        # --greedy also upgrades casks that carry their own updater, which is
-        # the closest equivalent to a third-party application patcher.
-        run_brew_command upgrade --cask --greedy || return 1
+    if ((${#BLOCKED_CASKS[@]})); then
+        # Upgrading the rest by name keeps one application Homebrew cannot
+        # replace from failing every other formula and cask with it.
+        run_brew_command upgrade --formula || return 1
+
+        if ((${#UPGRADABLE_CASKS[@]})); then
+            if (( DO_GREEDY_CASKS )); then
+                run_brew_command upgrade --cask --greedy "${UPGRADABLE_CASKS[@]}" || return 1
+            else
+                run_brew_command upgrade --cask "${UPGRADABLE_CASKS[@]}" || return 1
+            fi
+        else
+            info "Every outdated cask is held back, so only formulae were upgraded."
+        fi
+    else
+        # Recent Homebrew upgrades outdated formulae and casks together.
+        run_brew_command upgrade || return 1
+
+        if (( DO_GREEDY_CASKS )); then
+            # --greedy also upgrades casks that carry their own updater, which
+            # is the closest equivalent to a third-party application patcher.
+            run_brew_command upgrade --cask --greedy || return 1
+        fi
     fi
 
     if (( DO_CLEANUP )); then

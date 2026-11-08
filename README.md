@@ -311,6 +311,16 @@ When installed, the script also updates:
 
 Homebrew is the macOS counterpart of Chocolatey and Scoop, and MacPorts is the other established equivalent. `--greedy-casks` adds `brew upgrade --cask --greedy`, which also refreshes casks that carry their own updater; that is the closest macOS equivalent of the Patch My PC Home Updater. It is not the default, because it re-downloads applications that would have updated themselves.
 
+Homebrew replaces a cask's application by moving the installed bundle into the
+Caskroom first, and macOS permits that rename only when the bundle is
+writable. An application another installer placed as `root` can therefore not
+be replaced by Homebrew at all, and the attempt fails after downloading, with
+a message about the backup path rather than the ownership behind it. The
+script checks the outdated casks beforehand, holds back the ones whose
+application it cannot replace, and upgrades the rest by name so one of them
+cannot take the others down. [macos/README.md](macos/README.md) gives the
+remedy, which needs no `sudo`.
+
 ## Major macOS upgrades
 
 The script reads every update that `softwareupdate` offers, works out the macOS
@@ -567,7 +577,8 @@ The banner adapts to where it is printed:
 Individual package-manager commands may return other statuses internally. The script records those failures, continues where possible, and returns `1` after printing its summary.
 
 Updates that were deliberately held back — a phased APT package, a macOS
-release above what the Mac may install, or Patch My PC while a web browser is
+release above what the Mac may install, a Homebrew cask whose application
+Homebrew is not allowed to replace, or Patch My PC while a web browser is
 open — are named in the summary and do not by themselves change the exit code.
 Skipped managers do not either. Only a failed operation produces `1`.
 
