@@ -18,8 +18,8 @@
         Microsoft Store.
 
     A failing updater does not stop the others. The script reports what
-    succeeded, what was skipped, and what failed, and exits with a non-zero
-    exit code if anything failed.
+    succeeded, what was skipped or held back, and what failed, and exits with
+    a non-zero exit code if anything failed.
 
     This script intentionally does not update project or language
     dependencies such as npm project packages, pip environments, NuGet
@@ -44,6 +44,11 @@
     Full path to PatchMyPC.exe. Use this when the portable Patch My PC Home
     Updater is kept somewhere the script does not search, such as a
     downloads folder.
+
+.PARAMETER PatchMyPCTimeoutMinutes
+    How long to wait for the Patch My PC Home Updater to finish, from 1 to
+    1440 minutes. The default is 60. A Home Updater still running after this
+    is left running in the background, and the step is reported as failed.
 
 .PARAMETER DryRun
     Detect installed updaters and report the mutating commands that would run,
@@ -82,6 +87,7 @@ param(
     [switch]$IncludeDrivers,
     [switch]$NoCleanup,
     [string]$PatchMyPCPath,
+    [int]$PatchMyPCTimeoutMinutes = 60,
     [switch]$DryRun,
     [Alias('Version')]
     [switch]$ShowVersion,
@@ -104,6 +110,7 @@ $script:Succeeded = @()
 $script:Failed = @()
 $script:Skipped = @()
 $script:Planned = @()
+$script:HeldBack = @()
 $script:RebootRequired = $false
 $script:LastExternalExitCode = 0
 $script:ExitCode = 0
@@ -127,6 +134,175 @@ function Write-Section {
     param([string]$Message)
     Write-Host ''
     Write-Host "==> $Message" -ForegroundColor Cyan
+}
+
+# The start-up banner: the Update Everything ring-and-tick logo as ASCII art,
+# beside the name, version, tagline and a subtitle. The ring's four arcs are
+# coloured light blue, blue, green and grey around a green tick. Consoles
+# narrower than 72 columns get a short form instead, and a subtitle too long
+# for the console is shortened rather than wrapped.
+#
+# Colour: consoles that process virtual-terminal sequences (Windows 10 and
+# later, Windows Terminal, PowerShell 7) get the brand's 24-bit colours; other
+# consoles get the nearest console colours; NO_COLOR turns colour off.
+#
+# This file stays pure ASCII so that Windows PowerShell 5.1 reads it correctly
+# without a byte order mark, so the divider and bullet are built from their
+# code points.
+$script:BannerMinimumWidth = 72
+$script:BannerTextColumn = 45
+$script:BannerSgr = @{
+    BL = '38;2;96;165;250'
+    B  = '38;2;59;130;246'
+    G  = '38;2;34;197;94'
+    N  = '1;38;2;34;197;94'
+    S  = '38;2;156;163;175'
+    T  = '38;2;229;231;235'
+    D  = '38;2;107;114;128'
+}
+$script:BannerConsoleColor = @{
+    BL = 'DarkCyan'
+    B  = 'Blue'
+    G  = 'Green'
+    N  = 'Green'
+    S  = 'Gray'
+    T  = 'White'
+    D  = 'DarkGray'
+}
+
+function Get-BannerColorMode {
+    if ($env:NO_COLOR) {
+        return 'None'
+    }
+    $virtualTerminal = $false
+    try {
+        $virtualTerminal = [bool]$Host.UI.SupportsVirtualTerminal -and -not [Console]::IsOutputRedirected
+    } catch {
+        Write-Verbose "Virtual-terminal support is unknown: $($_.Exception.Message)"
+    }
+    if ($virtualTerminal) {
+        return 'Ansi'
+    }
+    return 'Console'
+}
+
+function Write-BannerLine {
+    param(
+        [object[]]$Segment = @(),
+        [ValidateSet('Ansi', 'Console', 'None')]
+        [string]$Mode = 'None'
+    )
+    if ($Mode -eq 'Console') {
+        foreach ($item in $Segment) {
+            if ($item[1]) {
+                Write-Host ([string]$item[0]) -NoNewline -ForegroundColor $script:BannerConsoleColor[$item[1]]
+            } else {
+                Write-Host ([string]$item[0]) -NoNewline
+            }
+        }
+        Write-Host ''
+        return
+    }
+
+    $escape = [string][char]27
+    $line = New-Object System.Text.StringBuilder
+    foreach ($item in $Segment) {
+        if ($Mode -eq 'Ansi' -and $item[1]) {
+            [void]$line.Append($escape + '[' + $script:BannerSgr[$item[1]] + 'm' + [string]$item[0] + $escape + '[0m')
+        } else {
+            [void]$line.Append([string]$item[0])
+        }
+    }
+    Write-Host $line.ToString()
+}
+
+function Get-ConsoleWidth {
+    $width = 0
+    try {
+        $width = [int]$Host.UI.RawUI.WindowSize.Width
+    } catch {
+        Write-Verbose "The console width is unavailable: $($_.Exception.Message)"
+    }
+    if ($width -le 0) {
+        $width = 80
+    }
+    return $width
+}
+
+# Return the text, shortened with "..." when it is longer than Room columns.
+# A room too small to hold anything useful leaves the text unchanged.
+function Get-BannerSubtitle {
+    param([string]$Text, [int]$Room)
+    if ($Room -ge 4 -and $Text.Length -gt $Room) {
+        return $Text.Substring(0, $Room - 3) + '...'
+    }
+    return $Text
+}
+
+function Show-Banner {
+    param([string]$Subtitle = '')
+
+    $mode = Get-BannerColorMode
+    $width = Get-ConsoleWidth
+    $previousEncoding = $null
+    try {
+        $previousEncoding = [Console]::OutputEncoding
+        [Console]::OutputEncoding = [Text.Encoding]::UTF8
+    } catch {
+        Write-Verbose "The console output encoding cannot be changed: $($_.Exception.Message)"
+    }
+
+    try {
+        # Each form indents the subtitle differently. Leave the last column
+        # free, so that the subtitle line never wraps.
+        if ($width -lt $script:BannerMinimumWidth) {
+            $Subtitle = Get-BannerSubtitle -Text $Subtitle -Room ($width - 3)
+            Write-BannerLine -Mode $mode -Segment @(@(([string][char]0x25CF), 'G'), @(' ', $null), @('Update Everything', 'N'), @(' ', $null), @($ScriptVersion, 'D'))
+            Write-BannerLine -Mode $mode -Segment @(@('  ', $null), @('Everything, carefully.', 'T'))
+            if ($Subtitle) {
+                Write-BannerLine -Mode $mode -Segment @(@('  ', $null), @($Subtitle, 'D'))
+            }
+        } else {
+            $Subtitle = Get-BannerSubtitle -Text $Subtitle -Room ($width - $script:BannerTextColumn - 1)
+            $bar = [string][char]0x2502
+            $rows = @(
+                @(@('                  ', $null), @('%', 'BL')),
+                @(@('           ', $null), @('@@@@@@@@', 'BL'), @('  ', $null), @('@@@@@@@%', 'B')),
+                @(@('        ', $null), @('@@@@@@@@@@@', 'BL'), @('  ', $null), @('@%%%%@@@@@#', 'B')),
+                @(@('      ', $null), @('@@@@@@@@@@@@@%', 'BL'), @(' ', $null), @('@@@@@@%%%@@@@', 'B')),
+                @(@('     ', $null), @('@@@@@@@@@@', 'BL'), @('          ', $null), @('@@@@@%%@@@', 'B')),
+                @(@('    ', $null), @('@@@@@@@@', 'BL'), @('                ', $null), @('@@@@@@@+', 'B')),
+                @(@('  ', $null), @('@@', 'G'), @('   ', $null), @('=@@', 'BL'), @('                    ', $null), @('@@', 'B'), @('    ', $null), @('@@', 'S')),
+                @(@('  ', $null), @('@@@@@@', 'G'), @('                  ', $null), @('@@', 'G'), @('    ', $null), @('@@@@@@', 'S')),
+                @(@(' ', $null), @('@@%%%@@', 'G'), @('                ', $null), @('@@@@@', 'G'), @('   ', $null), @('@@@@@@@', 'S')),
+                @(@(' ', $null), @('@%%%%@@', 'G'), @('              ', $null), @('@@@%@@%', 'G'), @('   ', $null), @(':@@@@@@', 'S'), @('    ', $null), @($bar, 'D'), @(' ', $null), @('Update Everything', 'N'), @(' ', $null), @($ScriptVersion, 'D')),
+                @(@(' ', $null), @('@%%%%@', 'G'), @('    ', $null), @('@@@@', 'G'), @('     ', $null), @('*@@%@@@', 'G'), @('      ', $null), @('@@@@@@', 'S'), @('    ', $null), @($bar, 'D'), @(' ', $null), @('Everything, carefully.', 'T')),
+                @(@(' ', $null), @('@%%%%@', 'G'), @('    ', $null), @('@@@@@@', 'G'), @('  ', $null), @('@@@@@@', 'G'), @('        ', $null), @('@@@@@@', 'S'), @('    ', $null), @($bar, 'D'), @(' ', $null), @($Subtitle, 'D')),
+                @(@(' ', $null), @('@%%%%@@', 'G'), @('    ', $null), @('@@@%@@@@@@@', 'G'), @('          ', $null), @('@@@@@@', 'S')),
+                @(@(' ', $null), @('@@%%%@@', 'G'), @('      ', $null), @('@@@%%@@@', 'G'), @('          ', $null), @('@@@@@@@', 'S')),
+                @(@('  ', $null), @('@@%%%@@', 'G'), @('       ', $null), @('@@@@', 'G'), @('           ', $null), @('@@@@@@@', 'S')),
+                @(@('  ', $null), @('@@@%%%@@', 'G'), @('                    ', $null), @('@@@@@@@@', 'S')),
+                @(@('   ', $null), @('@@@%%%@@@', 'G'), @('                ', $null), @('@@@@@@@@@', 'S')),
+                @(@('     ', $null), @('@@%%%%@@@@', 'G'), @('          ', $null), @('@@@@@@@@@@', 'S')),
+                @(@('      ', $null), @('@@@@%%%%@@@@@@', 'G'), @('=@@@@@@@@@@@@@', 'S')),
+                @(@('        ', $null), @('@@@@@%%%%%@', 'G'), @('  ', $null), @('@@@@@@@@@@@', 'S')),
+                @(@('           ', $null), @('@@@@@@@@', 'G'), @('  ', $null), @('@@@@@@@@', 'S')),
+                @(@('                  ', $null), @('@', 'G'), @('  ', $null), @('@', 'S'))
+            )
+            foreach ($row in $rows) {
+                Write-BannerLine -Mode $mode -Segment $row
+            }
+        }
+        Write-Host ''
+    } finally {
+        if ($null -ne $previousEncoding) {
+            try {
+                [Console]::OutputEncoding = $previousEncoding
+            } catch {
+                Write-Verbose "The console output encoding cannot be restored: $($_.Exception.Message)"
+            }
+        }
+    }
 }
 
 function Test-Administrator {
@@ -188,6 +364,16 @@ function Add-SkippedItem {
 
     $script:Skipped += "$Label - $Reason"
     Write-Info "Skipping $Label - $Reason."
+}
+
+function Add-HeldBackItem {
+    param(
+        [Parameter(Mandatory = $true)][string]$Label,
+        [Parameter(Mandatory = $true)][string]$Reason
+    )
+
+    $script:HeldBack += "$Label - $Reason"
+    Write-Warn "Holding back $Label - $Reason."
 }
 
 function Assert-WindowsUpdateResult {
@@ -636,18 +822,78 @@ function Update-ScoopPackage {
     }
 }
 
+# Patch My PC's silent mode does not install while a web browser is open. It
+# checks again every ten seconds and installs only once every browser is
+# closed, so a run started with a browser open can wait indefinitely.
+$script:BrowserProcessNames = @('chrome', 'msedge', 'firefox', 'brave', 'opera', 'vivaldi')
+
+function Get-RunningBrowser {
+    # Returns one entry per browser, saying whether any of its processes has a
+    # window. Edge's startup boost and browsers that keep running background
+    # apps leave windowless processes behind after their last window closes.
+    $processes = @(Get-Process -Name $script:BrowserProcessNames -ErrorAction SilentlyContinue)
+    foreach ($name in @($processes | ForEach-Object { $_.ProcessName } | Sort-Object -Unique)) {
+        $windowed = @($processes | Where-Object {
+            $_.ProcessName -eq $name -and $_.MainWindowHandle -ne [IntPtr]::Zero
+        })
+        [pscustomobject]@{ Name = $name; HasWindow = ($windowed.Count -gt 0) }
+    }
+}
+
+function Invoke-PatchMyPCUpdate {
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    $label = 'Patch My PC applications'
+    $browsers = @(Get-RunningBrowser)
+    $open = @($browsers | Where-Object { $_.HasWindow } | ForEach-Object { $_.Name })
+    $background = @($browsers | Where-Object { -not $_.HasWindow } | ForEach-Object { $_.Name })
+
+    if ($open.Count -gt 0) {
+        if ($DryRun) {
+            Write-Host "[DRY-RUN] Would not run `"$Path`" /s, because a web browser is open."
+        }
+        Add-HeldBackItem -Label $label `
+            -Reason "a web browser is open ($($open -join ', ')) and Patch My PC waits until every browser is closed; close them and run the script again"
+        return
+    }
+
+    if ($background.Count -gt 0) {
+        Write-Warn ("Browser processes are running without a window ($($background -join ', ')). " +
+            "If Patch My PC waits for them, the script stops waiting after $PatchMyPCTimeoutMinutes minutes.")
+    }
+
+    Invoke-Task -Label $label -Action { Update-PatchMyPCApplication -Path $Path }
+}
+
 function Update-PatchMyPCApplication {
     param([Parameter(Mandatory = $true)][string]$Path)
 
     # /s is Patch My PC Home Updater's fully silent automatic mode. /auto
     # performs automatic updates but still opens its graphical interface.
     if ($DryRun) {
-        Write-Host "[DRY-RUN] `"$Path`" /s"
+        Write-Host "[DRY-RUN] `"$Path`" /s, waiting up to $PatchMyPCTimeoutMinutes minutes for it to finish"
         return
     }
 
     Write-Info "Running: `"$Path`" /s"
-    $process = Start-Process -FilePath $Path -ArgumentList '/s' -Wait -PassThru
+    Write-Info "Waiting up to $PatchMyPCTimeoutMinutes minutes for Patch My PC to finish."
+
+    # Start-Process -Wait would also wait for every process Patch My PC
+    # starts, so an updated application that relaunches itself, such as a
+    # browser or chat client, would hold the script until it was closed.
+    # Waiting on the process object waits for Patch My PC alone.
+    $process = Start-Process -FilePath $Path -ArgumentList '/s' -PassThru
+
+    # Reading the handle before the process exits keeps its exit code
+    # available; Windows PowerShell 5.1 can otherwise report it as empty.
+    $null = $process.Handle
+
+    if (-not $process.WaitForExit($PatchMyPCTimeoutMinutes * 60000)) {
+        # Stopping an installer part-way through can leave an application
+        # broken, so Patch My PC is left to finish on its own.
+        throw ("PatchMyPC.exe (process $($process.Id)) is still running after $PatchMyPCTimeoutMinutes minutes; " +
+            'it was left running in the background.')
+    }
 
     if ($process.ExitCode -ne 0) {
         throw "PatchMyPC.exe exited with code $($process.ExitCode)."
@@ -719,6 +965,12 @@ function Write-Summary {
         foreach ($item in $script:Planned) { Write-Host "  - $item" }
     }
 
+    if ($script:HeldBack.Count -gt 0) {
+        Write-Host ''
+        Write-Host 'Held back:' -ForegroundColor Yellow
+        foreach ($item in $script:HeldBack) { Write-Host "  - $item" -ForegroundColor Yellow }
+    }
+
     if ($script:Skipped.Count -gt 0) {
         Write-Host ''
         Write-Host 'Not installed or skipped:'
@@ -742,6 +994,8 @@ function Write-Summary {
     } else {
         if ($DryRun) {
             Write-Info 'Dry run completed without executing mutating commands.'
+        } elseif ($script:HeldBack.Count -gt 0) {
+            Write-Info 'Every updater that ran completed successfully. Run the script again for the ones held back.'
         } else {
             Write-Info 'All detected updaters completed successfully.'
         }
@@ -806,7 +1060,7 @@ function Invoke-ApplicationUpdate {
     }
 
     if ($patchMyPcPath) {
-        Invoke-Task -Label 'Patch My PC applications' -Action { Update-PatchMyPCApplication -Path $patchMyPcPath }
+        Invoke-PatchMyPCUpdate -Path $patchMyPcPath
     } elseif (-not $patchLookupFailed) {
         Add-SkippedItem -Label 'Patch My PC Home Updater' -Reason 'not found, or pass -PatchMyPCPath to point at it'
     }
@@ -844,6 +1098,12 @@ function Invoke-Main {
         return
     }
 
+    if ($PatchMyPCTimeoutMinutes -lt 1 -or $PatchMyPCTimeoutMinutes -gt 1440) {
+        Write-Fail '-PatchMyPCTimeoutMinutes must be between 1 and 1440.'
+        $script:ExitCode = 2
+        return
+    }
+
     if ($PSVersionTable.PSVersion.Major -ge 6 -and -not $IsWindows) {
         Write-Fail 'This script supports Windows only.'
         $script:ExitCode = 2
@@ -853,7 +1113,11 @@ function Invoke-Main {
     $operatingSystem = Get-OperatingSystemName
     $isElevated = Test-Administrator
 
-    Write-Host "$ScriptName $ScriptVersion"
+    $bannerSubtitle = $operatingSystem
+    if ($DryRun) {
+        $bannerSubtitle += ' - dry run'
+    }
+    Show-Banner -Subtitle $bannerSubtitle
     Write-Info "Detected operating system: $operatingSystem"
 
     if ($DryRun) {

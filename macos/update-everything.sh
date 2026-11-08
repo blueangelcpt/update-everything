@@ -145,6 +145,142 @@ section() {
     printf '\n==> %s\n' "$*"
 }
 
+# The start-up banner: the Update Everything ring-and-tick logo as ASCII art,
+# beside the name, version, tagline and a subtitle. The ring's four arcs are
+# coloured light blue, blue, green and grey around a green tick. The art is
+# pure ASCII, so it also prints in a locale that is not UTF-8, where the
+# divider and separator fall back to ASCII as well. Terminals narrower than 72
+# columns get a short form instead, and a subtitle too long for the terminal is
+# shortened rather than wrapped. Colour is used only when standard output is a
+# terminal, TERM is not "dumb", and NO_COLOR is unset.
+readonly BANNER_MIN_COLUMNS=72
+readonly BANNER_TEXT_COLUMN=45
+
+banner_uses_color() {
+    [[ -z "${NO_COLOR:-}" && -t 1 && "${TERM:-}" != "dumb" ]]
+}
+
+banner_locale_is_utf8() {
+    case "${LC_ALL:-${LC_CTYPE:-${LANG:-}}}" in
+        *UTF-8*|*utf-8*|*UTF8*|*utf8*) return 0 ;;
+    esac
+    return 1
+}
+
+terminal_columns() {
+    local columns="${COLUMNS:-}" tput_path
+
+    if [[ ! "$columns" =~ ^[0-9]+$ ]]; then
+        columns=""
+        if tput_path="$(find_system_command tput)"; then
+            columns="$("$tput_path" cols 2>/dev/null)" || columns=""
+        fi
+    fi
+    [[ "$columns" =~ ^[0-9]+$ ]] || columns=80
+    printf '%s\n' "$columns"
+}
+
+# fit_banner_subtitle text room
+# Print the text, shortened with "..." when it is longer than room columns.
+# A room too small to hold anything useful leaves the text unchanged.
+fit_banner_subtitle() {
+    local text="$1" room="$2"
+
+    if (( room >= 4 && ${#text} > room )); then
+        text="${text:0:room-3}..."
+    fi
+    printf '%s\n' "$text"
+}
+
+# print_banner [subtitle part]...
+# The parts are joined with a middle dot, or with a hyphen without UTF-8.
+print_banner() {
+    local BL="" B="" G="" S="" T="" D="" BOLD="" X=""
+    local separator=' - ' divider='|' subtitle="" part bar columns room utf8=0
+
+    if banner_uses_color; then
+        if [[ "${COLORTERM:-}" == *truecolor* || "${COLORTERM:-}" == *24bit* ]]; then
+            BL=$'\033[38;2;96;165;250m'
+            B=$'\033[38;2;59;130;246m'
+            G=$'\033[38;2;34;197;94m'
+            S=$'\033[38;2;156;163;175m'
+            T=$'\033[38;2;229;231;235m'
+            D=$'\033[38;2;107;114;128m'
+        else
+            BL=$'\033[38;5;75m'
+            B=$'\033[38;5;69m'
+            G=$'\033[38;5;41m'
+            S=$'\033[38;5;248m'
+            T=$'\033[38;5;254m'
+            D=$'\033[38;5;243m'
+        fi
+        BOLD=$'\033[1m'
+        X=$'\033[0m'
+    fi
+
+    if banner_locale_is_utf8; then
+        utf8=1
+        separator=' · '
+        divider='│'
+    fi
+    for part in "$@"; do
+        [[ -n "$part" ]] || continue
+        if [[ -n "$subtitle" ]]; then
+            subtitle="$subtitle$separator$part"
+        else
+            subtitle="$part"
+        fi
+    done
+
+    # Each form indents the subtitle differently. Leave the last column free,
+    # so that the subtitle line never wraps.
+    columns="$(terminal_columns)"
+    if (( columns < BANNER_MIN_COLUMNS )); then
+        if (( utf8 )); then
+            subtitle="$(fit_banner_subtitle "$subtitle" $(( columns - 3 )))"
+            printf '%s●%s %s%sUpdate Everything%s %s%s%s\n' "$G" "$X" "$BOLD" "$G" "$X" "$D" "$SCRIPT_VERSION" "$X"
+            printf '  %sEverything, carefully.%s\n' "$T" "$X"
+            [[ -z "$subtitle" ]] || printf '  %s%s%s\n' "$D" "$subtitle" "$X"
+        else
+            subtitle="$(fit_banner_subtitle "$subtitle" $(( columns - 6 )))"
+            printf '%s[ok]%s %s%sUpdate Everything%s %s%s%s - Everything, carefully.\n' \
+                "$G" "$X" "$BOLD" "$G" "$X" "$D" "$SCRIPT_VERSION" "$X"
+            [[ -z "$subtitle" ]] || printf '     %s%s%s\n' "$D" "$subtitle" "$X"
+        fi
+        printf '\n'
+        return 0
+    fi
+
+    room=$(( columns - BANNER_TEXT_COLUMN - 1 ))
+    subtitle="$(fit_banner_subtitle "$subtitle" "$room")"
+
+    bar="${D}${divider}${X}"
+    printf '%s\n' \
+        "                  ${BL}%${X}" \
+        "           ${BL}@@@@@@@@${X}  ${B}@@@@@@@%${X}" \
+        "        ${BL}@@@@@@@@@@@${X}  ${B}@%%%%@@@@@#${X}" \
+        "      ${BL}@@@@@@@@@@@@@%${X} ${B}@@@@@@%%%@@@@${X}" \
+        "     ${BL}@@@@@@@@@@${X}          ${B}@@@@@%%@@@${X}" \
+        "    ${BL}@@@@@@@@${X}                ${B}@@@@@@@+${X}" \
+        "  ${G}@@${X}   ${BL}=@@${X}                    ${B}@@${X}    ${S}@@${X}" \
+        "  ${G}@@@@@@${X}                  ${G}@@${X}    ${S}@@@@@@${X}" \
+        " ${G}@@%%%@@${X}                ${G}@@@@@${X}   ${S}@@@@@@@${X}" \
+        " ${G}@%%%%@@${X}              ${G}@@@%@@%${X}   ${S}:@@@@@@${X}    ${bar} ${BOLD}${G}Update Everything${X} ${D}${SCRIPT_VERSION}${X}" \
+        " ${G}@%%%%@${X}    ${G}@@@@${X}     ${G}*@@%@@@${X}      ${S}@@@@@@${X}    ${bar} ${T}Everything, carefully.${X}" \
+        " ${G}@%%%%@${X}    ${G}@@@@@@${X}  ${G}@@@@@@${X}        ${S}@@@@@@${X}    ${bar} ${D}${subtitle}${X}" \
+        " ${G}@%%%%@@${X}    ${G}@@@%@@@@@@@${X}          ${S}@@@@@@${X}" \
+        " ${G}@@%%%@@${X}      ${G}@@@%%@@@${X}          ${S}@@@@@@@${X}" \
+        "  ${G}@@%%%@@${X}       ${G}@@@@${X}           ${S}@@@@@@@${X}" \
+        "  ${G}@@@%%%@@${X}                    ${S}@@@@@@@@${X}" \
+        "   ${G}@@@%%%@@@${X}                ${S}@@@@@@@@@${X}" \
+        "     ${G}@@%%%%@@@@${X}          ${S}@@@@@@@@@@${X}" \
+        "      ${G}@@@@%%%%@@@@@@${X}${S}=@@@@@@@@@@@@@${X}" \
+        "        ${G}@@@@@%%%%%@${X}  ${S}@@@@@@@@@@@${X}" \
+        "           ${G}@@@@@@@@${X}  ${S}@@@@@@@@${X}" \
+        "                  ${G}@${X}  ${S}@${X}" \
+        ""
+}
+
 have_command() {
     command -v "$1" >/dev/null 2>&1
 }
@@ -1016,7 +1152,11 @@ main() {
     load_system_information || return 2
     select_privilege_tool
 
-    printf '%s %s\n' "$SCRIPT_NAME" "$SCRIPT_VERSION"
+    if (( DRY_RUN )); then
+        print_banner "$MACOS_NAME $MACOS_VERSION" "dry run"
+    else
+        print_banner "$MACOS_NAME $MACOS_VERSION"
+    fi
     info "Detected system: $MACOS_NAME $MACOS_VERSION on ${HARDWARE_MODEL:-an unknown model} (${ARCHITECTURE:-unknown architecture})"
 
     # A Mac without OpenCore Legacy Patcher says nothing about it, and has no

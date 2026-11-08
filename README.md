@@ -8,6 +8,8 @@ A small collection of scripts that updates the operating system and supported pa
 
 The project is intended for people who want a straightforward way to install all available software updates without remembering a different set of commands for every platform or Linux distribution.
 
+Project website: <https://blueangelcpt.github.io/update-everything/>
+
 ## Current status
 
 | Platform | Script | Status |
@@ -206,6 +208,7 @@ Scoop refuses to run elevated, because it installs into the profile of the user 
 | `-IncludeDrivers` | Also install driver updates offered by Windows Update. |
 | `-NoCleanup` | Skip Scoop's old-version and download-cache cleanup commands. Other managers retain their own built-in behavior. |
 | `-PatchMyPCPath <path>` | Full path to `PatchMyPC.exe`, for a portable copy the script does not find on its own. |
+| `-PatchMyPCTimeoutMinutes <minutes>` | How long to wait for Patch My PC to finish, from 1 to 1440 minutes. The default is 60. See [Patch My PC and open browsers](#patch-my-pc-and-open-browsers). |
 | `-DryRun` | Detect updaters and show mutating work without executing it. |
 | `-Version` | Print the script version and exit. |
 
@@ -241,11 +244,12 @@ Examples:
    exit codes Chocolatey documents as valid and treating a reboot-detection
    code as a failure that needs attention.
 6. Runs `scoop update` and `scoop update *`, and cleans up old versions and the download cache unless `-NoCleanup` is given.
-7. Verifies Patch My PC's Authenticode publisher, then runs the Home Updater
-   with `/s`, its fully silent automatic mode.
+7. Verifies Patch My PC's Authenticode publisher, holds it back if a web
+   browser window is open, and otherwise runs the Home Updater with `/s`, its
+   fully silent automatic mode, waiting at most `-PatchMyPCTimeoutMinutes`.
 8. Triggers a Microsoft Store update scan, which installs what it finds in the background. The scan needs an elevated session, and is reported as skipped in a normal one.
 9. Continues with the remaining updaters if one of them fails.
-10. Prints a summary and exits with a non-zero status if any operation failed.
+10. Prints a summary, including anything held back, and exits with a non-zero status if any operation failed.
 
 ### How the Windows script finds each updater
 
@@ -261,6 +265,32 @@ The Patch My PC Home Updater is often kept as a portable executable in a
 downloads folder. The script never auto-discovers executables in user-writable
 directories. Pass `-PatchMyPCPath` for a portable copy; the file is still
 refused unless Windows reports a valid Patch My PC Authenticode signature.
+
+### Patch My PC and open browsers
+
+The Patch My PC Home Updater's silent mode, `/s`, does not install anything
+while a web browser is open. It checks again every ten seconds and starts
+installing only once every browser is closed, so a run started with a browser
+open can wait indefinitely. Before starting it, the script looks for Chrome,
+Edge, Firefox, Brave, Opera and Vivaldi by process name:
+
+- If any of them has a window open, Patch My PC is not started. It is named in
+  the "Held back" section of the summary with the browsers that were open.
+  **Close every browser and run the script again** to update those
+  applications. Use `-SkipWindowsUpdate` for that second run if Windows Update
+  has already finished.
+- If a browser runs only in the background, with no window, as Edge does with
+  startup boost, Patch My PC is started with a warning, because it may still
+  wait for that browser.
+
+The script then waits for Patch My PC itself to exit, not for the
+applications it updates: one that restarts itself afterwards, such as a
+browser, chat client or game launcher, does not hold the script up. It waits
+at most `-PatchMyPCTimeoutMinutes`, 60 minutes by default. Patch My PC still
+running after that is left running in the background, because stopping an
+installer part-way through could leave an application broken, and the step is
+reported as failed so that the run exits `1`. The remaining updaters run as
+usual.
 
 ## macOS support
 
@@ -473,6 +503,57 @@ guarantee that a later live update will succeed.
 
 Always keep current backups of important data before applying system-wide updates.
 
+## Start-up banner
+
+Every script opens with the Update Everything logo as ASCII art, next to the
+version, the tagline, and the detected operating system (with `dry run`
+appended in dry-run mode). In colour, the ring's four arcs are light blue,
+blue, green and grey around a green tick:
+
+```text
+                  %
+           @@@@@@@@  @@@@@@@%
+        @@@@@@@@@@@  @%%%%@@@@@#
+      @@@@@@@@@@@@@% @@@@@@%%%@@@@
+     @@@@@@@@@@          @@@@@%%@@@
+    @@@@@@@@                @@@@@@@+
+  @@   =@@                    @@    @@
+  @@@@@@                  @@    @@@@@@
+ @@%%%@@                @@@@@   @@@@@@@
+ @%%%%@@              @@@%@@%   :@@@@@@    │ Update Everything 2.0.0
+ @%%%%@    @@@@     *@@%@@@      @@@@@@    │ Everything, carefully.
+ @%%%%@    @@@@@@  @@@@@@        @@@@@@    │ Ubuntu 24.04 LTS · dry run
+ @%%%%@@    @@@%@@@@@@@          @@@@@@
+ @@%%%@@      @@@%%@@@          @@@@@@@
+  @@%%%@@       @@@@           @@@@@@@
+  @@@%%%@@                    @@@@@@@@
+   @@@%%%@@@                @@@@@@@@@
+     @@%%%%@@@@          @@@@@@@@@@
+      @@@@%%%%@@@@@@=@@@@@@@@@@@@@
+        @@@@@%%%%%@  @@@@@@@@@@@
+           @@@@@@@@  @@@@@@@@
+                  @  @
+```
+
+The banner adapts to where it is printed:
+
+- A terminal narrower than 72 columns gets a short form instead: the name and
+  version, the tagline, and the subtitle, without the logo.
+- A subtitle too long for the terminal is shortened with `...` rather than
+  wrapped. The next line of output names the operating system in full.
+- On Linux and macOS, a locale that is not UTF-8 still gets the logo, with `|`
+  and `-` in place of the divider and the middle dot. In a narrow terminal it
+  gets a single plain-ASCII line.
+- Colour is used only in a terminal. Setting
+  [`NO_COLOR`](https://no-color.org) turns it off on every platform, and the
+  Linux and macOS scripts also omit it when `TERM` is `dumb` or output is
+  redirected.
+- Terminals that advertise `COLORTERM=truecolor` get the brand's exact 24-bit
+  colours. Other terminals get the nearest 256-colour equivalents. On Windows,
+  consoles that process escape sequences, as Windows 10 and later do, get the
+  24-bit colours, and older consoles get the nearest console colours.
+- `--help` and `--version` (`-ShowVersion` on Windows) print no banner.
+
 ## Exit codes
 
 | Code | Meaning |
@@ -485,10 +566,10 @@ Always keep current backups of important data before applying system-wide update
 
 Individual package-manager commands may return other statuses internally. The script records those failures, continues where possible, and returns `1` after printing its summary.
 
-Updates that were deliberately held back — a phased APT package, or a macOS
-release above what the Mac may install — are named in the summary and do not by
-themselves change the exit code. Skipped managers do not either. Only a failed
-operation produces `1`.
+Updates that were deliberately held back — a phased APT package, a macOS
+release above what the Mac may install, or Patch My PC while a web browser is
+open — are named in the summary and do not by themselves change the exit code.
+Skipped managers do not either. Only a failed operation produces `1`.
 
 On Linux and macOS, an interrupted run still prints its summary: what had
 completed, failed, or been held back, the manager that was running when the
