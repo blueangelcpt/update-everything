@@ -510,6 +510,8 @@ test_start_up_banner() {
 # Caskroom either way, and the fixture needs no privileges. The three casks
 # cover the shapes a Caskroom entry can have.
 CASK_FIXTURE_ROOT=""
+CASK_FIXTURE_OWNER=""
+CASK_FIXTURE_GID=""
 
 make_cask_fixture() {
     local root="$1"
@@ -533,6 +535,8 @@ make_cask_fixture() {
 # do not depend on where they are called from.
 stub_cask_fixture_commands() {
     CASK_FIXTURE_ROOT="$1"
+    CASK_FIXTURE_OWNER="$(id -un)"
+    CASK_FIXTURE_GID="$(id -g)"
 
     # Invoked indirectly through classify_outdated_casks.
     # shellcheck disable=SC2317
@@ -546,14 +550,32 @@ stub_cask_fixture_commands() {
     }
     # shellcheck disable=SC2317
     outdated_cask_tokens() { printf 'blocked\nstale\nfine\n'; }
-    # The real helper shifts the command name off before running it.
+    # The real helper shifts the command name off before running it. The
+    # macOS stat formats are emulated rather than run, because the suite also
+    # runs on a Linux runner, where stat's -f selects file system information
+    # instead of a format string. The fixture still exercises the candidate
+    # discovery, and -d and -w against a genuinely unwritable bundle, for
+    # real; the permission classes have their own test below.
     # shellcheck disable=SC2317
     run_system_command() {
         local command_name="$1"
         shift
         case "$command_name" in
-            readlink) /usr/bin/readlink "$@" ;;
-            stat) /usr/bin/stat "$@" ;;
+            readlink)
+                readlink "$@"
+                ;;
+            stat)
+                local format="$2" path="$3" mode=755
+                case "$path" in
+                    *'/Applications/Blocked.app' | *'/Applications/Stale.app')
+                        mode=555
+                        ;;
+                esac
+                case "$format" in
+                    '%Su') printf '%s\n' "$CASK_FIXTURE_OWNER" ;;
+                    *) printf '%s %s %s\n' "$EUID" "$CASK_FIXTURE_GID" "$mode" ;;
+                esac
+                ;;
         esac
     }
     CASK_APPLICATION_DIRS=("$CASK_FIXTURE_ROOT/Applications")
@@ -568,7 +590,7 @@ test_unreplaceable_cask_application_is_held_back() {
     root="$(mktemp -d)"
     make_cask_fixture "$root"
     stub_cask_fixture_commands "$root"
-    owner="$(/usr/bin/stat -f '%Su' "$root/Applications/Blocked.app")"
+    owner="$CASK_FIXTURE_OWNER"
 
     # The buckets are filled in the current shell, so the output is captured
     # from one call and the resulting state read from the next.
@@ -604,6 +626,8 @@ test_unreplaceable_cask_application_is_held_back() {
     chmod u+w "$root/Applications/Blocked.app" "$root/Applications/Stale.app"
     rm -rf "$root"
     CASK_FIXTURE_ROOT=""
+    CASK_FIXTURE_OWNER=""
+    CASK_FIXTURE_GID=""
     unset -f brew
     # Restore the script's own helpers rather than deleting them, which would
     # leave later tests calling a function that no longer exists.
