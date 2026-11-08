@@ -26,6 +26,22 @@ All notable changes are documented here. The project uses one repository-wide
 
 ### Fixed
 
+- Hold back a Homebrew cask whose application Homebrew is not allowed to
+  replace, instead of letting the upgrade fail. Homebrew backs the installed
+  application up by moving it into the Caskroom, which renames the bundle into
+  a different parent directory, and macOS allows that only when the bundle
+  itself is writable. An application another installer placed as root — a
+  vendor `.pkg` or an in-application updater that installs through a
+  privileged helper — could therefore never be replaced, and the attempt
+  failed after downloading with a message naming the backup path rather than
+  the ownership behind it, taking every formula and cask in the same command
+  with it. The macOS script now names such casks under "Held back", with the
+  owner and the sudo-free remedy, and upgrades the remaining formulae and
+  casks by name. Held-back casks do not change the exit code. The check
+  confirms an unwritable answer against the application's owner, group, and
+  mode, because `access(2)` can refuse an application bundle for reasons that
+  have nothing to do with its permissions, and treats an owner and mode it
+  cannot read as replaceable.
 - Stop the Windows script hanging at the Patch My PC step. It waited with
   `Start-Process -Wait`, which waits for every process Patch My PC starts, so
   an updated application that relaunched itself kept the script waiting until

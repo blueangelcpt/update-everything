@@ -18,6 +18,45 @@ version does not support.
 
 A manager that is not installed is reported as skipped, not as a failure. One manager failing does not stop the others.
 
+## Applications Homebrew cannot replace
+
+Homebrew upgrades a cask by first moving the installed application into the
+Caskroom as a backup. That renames the bundle into a different parent
+directory, and macOS allows such a rename only when the bundle itself is
+writable, because it has to rewrite the bundle's `..` entry. An application
+that another installer placed as `root` — a vendor `.pkg`, an in-application
+updater that installs through a privileged helper, or the Mac App Store — is
+therefore one Homebrew cannot replace at all without `sudo`. The attempt
+downloads the new version and then fails with a message naming the backup
+path, which says nothing about the ownership that caused it, and the one cask
+takes every formula and cask in the same command down with it.
+
+The script checks the outdated casks before upgrading. A cask whose
+application the filesystem will not let it replace is named under "Held back"
+with its owner and the remedy, and the remaining casks and formulae are
+upgraded by name so that they still get through. Held-back casks do not change
+the exit code.
+
+The remedy is a rename **within** the same folder, which needs no privileges
+because it leaves the bundle's parent unchanged:
+
+```bash
+mv /Applications/Example.app /Applications/Example.app.old
+```
+
+Run the script again and Homebrew installs its own copy. Deleting the renamed
+one does need administrator rights, so do that afterwards, once the
+replacement has been confirmed to work:
+
+```bash
+sudo rm -rf /Applications/Example.app.old
+```
+
+An application that updates itself through a privileged installer will do this
+again the next time it updates. Pick one owner for it: either let Homebrew
+manage it and decline its own updater, or let it manage itself and
+`brew uninstall --cask` it.
+
 ## Version guard
 
 The script reads every update that `softwareupdate` offers, works out the macOS
@@ -170,6 +209,10 @@ lets the current command, such as a `softwareupdate` install, finish first.
 - A Mac managed by nix-darwin is reported as skipped, because its configuration must be rebuilt from its own flake or configuration file rather than upgraded in place.
 - The script is written for the GNU bash 3.2 that ships with macOS, so it runs without installing a newer bash.
 - `--system-only` and `--skip-system-update` are mutually exclusive.
+- The writability check reads the application's owner, group, and mode rather
+  than trusting `access(2)` alone, which can refuse an application bundle for
+  reasons unrelated to its permissions. An owner and mode that cannot be read
+  count as replaceable, which leaves Homebrew to try as it did before.
 - Dry-run mode executes read-only inventory commands, including
   `softwareupdate --list`, but never elevates or invokes an install, upgrade,
   cleanup, channel update, or EULA acceptance operation.
