@@ -568,9 +568,8 @@ Individual package-manager commands may return other statuses internally. The sc
 
 Updates that were deliberately held back — a phased APT package, a macOS
 release above what the Mac may install, or Patch My PC while a web browser is
-open — are named in the summary and do not by
-themselves change the exit code. Skipped managers do not either. Only a failed
-operation produces `1`.
+open — are named in the summary and do not by themselves change the exit code.
+Skipped managers do not either. Only a failed operation produces `1`.
 
 On Linux and macOS, an interrupted run still prints its summary: what had
 completed, failed, or been held back, the manager that was running when the
